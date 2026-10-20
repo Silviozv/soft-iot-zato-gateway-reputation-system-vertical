@@ -1,0 +1,92 @@
+security:
+groups:
+
+channel_rest:
+
+  # Bootstrap (ID, estado, storage, ZMQ)
+  - name: bootstrap
+    service: soft-iot.bootstrap
+    url_path: /soft-iot/bootstrap
+    data_format: json
+
+  # Manutenção do storage (agregação + limpeza)
+  - name: local_storage_maintenance
+    service: soft-iot.storage.maintenance
+    url_path: /soft-iot/local-storage/maintenance
+    data_format: json
+
+  # API consumida por outros gateways
+  - name: local_storage_get_last_data
+    service: soft-iot.api.get-last-data
+    url_path: /soft-iot/devices/{device_id}/sensors/{sensor_id}/data/latest
+    data_format: json
+
+  # Tarefas de reputação (alvos do scheduler)
+  - name: task_check_nodes_services
+    service: soft-iot.reputation.task.check_nodes_services
+    url_path: /soft-iot/reputation/task/check-nodes-services
+    data_format: json
+  - name: task_calculate_reputation
+    service: soft-iot.reputation.task.calculate
+    url_path: /soft-iot/reputation/task/calculate-reputation
+    data_format: json
+  - name: task_change_disturbing_behavior
+    service: soft-iot.reputation.task.change_disturbing_behavior
+    url_path: /soft-iot/reputation/task/change-disturbing-behavior
+    data_format: json
+
+  # Depuração
+  - name: gateway_state_get
+    service: soft-iot.gateway.state.get
+    url_path: /soft-iot/reputation/task/get-data
+    data_format: json
+
+outgoing_rest:
+scheduler:
+ldap:
+sql:
+outgoing_soap:
+microsoft_365:
+cache:
+confluence:
+jira:
+email_imap:
+email_smtp:
+odoo:
+elastic_search:
+pubsub_topic:
+pubsub_permission:
+pubsub_subscription:
+
+external_scheduler:
+
+  # Sobe ID, estado, storage e ZMQ, em ordem (ajuste ao tempo de boot no Fogbed)
+  - name: "Bootstrap"
+    url: "http://localhost:11223/soft-iot/bootstrap"
+    job_type: "one_time"
+    initial_delay: 10
+
+  # Agrega e depois limpa (só apaga o que a agregação marcou)
+  - name: "Manutenção do storage"
+    url: "http://localhost:11223/soft-iot/local-storage/maintenance"
+    job_type: "interval_based"
+    interval: 5
+    unit: "minutes"
+
+  # - name: "Requisição de serviços"
+  #   url: "http://localhost:11223/soft-iot/reputation/task/check-nodes-services"
+  #   job_type: "interval_based"
+  #   interval: 20
+  #   unit: "seconds"
+
+  # - name: "Cálculo da reputação atual"
+  #   url: "http://localhost:11223/soft-iot/reputation/task/calculate-reputation"
+  #   job_type: "interval_based"
+  #   interval: 20
+  #   unit: "seconds"
+
+  # - name: "Checagem de comportamento perturbador"
+  #   url: "http://localhost:11223/soft-iot/reputation/task/change-disturbing-behavior"
+  #   job_type: "interval_based"
+  #   interval: 20
+  #   unit: "seconds"
