@@ -62,7 +62,7 @@ SAVE_DOCKER_LOGS = True        # salva `docker logs` de cada gateway junto com o
 # Imagens
 IMG_ZMQ = "silviozv/iota-zmq-bridge:1.0.0"
 IMG_API = "silviozv/tangle-hornet-api:1.0.2"
-IMG_GATEWAY = "silviozv/soft-iot-gateway-zato:1.0.0"
+IMG_GATEWAY = "silviozv/soft-iot-gateway-zato-vertical:1.0.0"
 IMG_DEVICE = "silviozv/python-iot-device:1.0.0"
 
 # gat0 = 172.17.0.{IP_BASE}, gat1 = 172.17.0.{IP_BASE+1}, ...
