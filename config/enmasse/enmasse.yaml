@@ -3,46 +3,178 @@ groups:
 
 channel_rest:
 
-  # Bootstrap (ID, estado, storage, ZMQ)
-  - name: bootstrap
-    service: soft-iot.bootstrap
-    url_path: /soft-iot/bootstrap
+  # Agregação
+  - name: local_storage_aggregation
+    service: soft-iot.aggregation.service
+    url_path: /soft-iot/local-storage/aggregation
     data_format: json
 
-  # Manutenção do storage (agregação + limpeza)
-  - name: local_storage_maintenance
-    service: soft-iot.storage.maintenance
-    url_path: /soft-iot/local-storage/maintenance
+  # Clean up
+  - name: local_storage_cleanup
+    service: soft-iot.cleanup.service
+    url_path: /soft-iot/local-storage/cleanup
     data_format: json
 
-  # API consumida por outros gateways
+  # Serviços da API
   - name: local_storage_get_last_data
     service: soft-iot.api.get-last-data
     url_path: /soft-iot/devices/{device_id}/sensors/{sensor_id}/data/latest
     data_format: json
-
-  # Tarefas de reputação (alvos do scheduler)
-  - name: task_check_nodes_services
-    service: soft-iot.reputation.task.check_nodes_services
-    url_path: /soft-iot/reputation/task/check-nodes-services
+  - name: local_storage_get_history
+    service: soft-iot.api.get-history
+    url_path: /soft-iot/devices/{device_id}/sensors/{sensor_id}/data
     data_format: json
-  - name: task_calculate_reputation
+  - name: local_storage_get_last_sensor_data
+    service: soft-iot.api.get-last-sensor-data
+    url_path: /soft-iot/devices/{device_id}/sensors/{sensor_id}/data/raw/latest
+    data_format: json
+  - name: local_storage_get_last_aggregated_data
+    service: soft-iot.api.get-last-aggregated-data
+    url_path: /soft-iot/devices/{device_id}/sensors/{sensor_id}/data/aggregated/latest
+    data_format: json
+  - name: local_storage_get_all_aggregated_data
+    service: soft-iot.api.get-all-aggregated-data
+    url_path: /soft-iot/devices/{device_id}/sensors/{sensor_id}/data/aggregated
+    data_format: json
+
+  # Start do local storage
+  - name: local_storage_service_start
+    service: soft-iot.storage.service
+    url_path: /soft-iot/local-storage/start
+    data_format: json
+
+  # Mapping devices
+  - name: mapping_devices_get_device
+    service: soft-iot.mapping.get-device
+    url_path: /soft-iot/mapping-devices/get-device
+    data_format: json
+  - name: mapping_devices_list_devices
+    service: soft-iot.mapping.list-devices
+    url_path: /soft-iot/mapping-devices/list-devices
+    data_format: json
+
+  - name: mapping_devices_collect_data
+    service: soft-iot.mapping.send-get
+    url_path: /soft-iot/mapping/collect
+    data_format: json
+  - name: mapping_devices_start_flow
+    service: soft-iot.mapping.send-flow
+    url_path: /soft-iot/mapping/flow
+    data_format: json
+  - name: mapping_devices_actuate
+    service: soft-iot.mapping.send-set
+    url_path: /soft-iot/mapping/actuate
+    data_format: json
+
+  # DLT client
+  - name: dlt_client_api_writer
+    service: soft-iot.dlt.client.api.write
+    url_path: /soft-iot/dlt/transactions
+    data_format: json
+  - name: dlt_client_api_read_index
+    service: soft-iot.dlt.client.api.read_index
+    url_path: /soft-iot/dlt/transactions/index/{index}
+    data_format: json
+  - name: dlt_client_api_read_id
+    service: soft-iot.dlt.client.api.read_id
+    url_path: /soft-iot/dlt/transactions/id/{message_id}
+    data_format: json
+
+  # ZMQ server
+  - name: zmq_server_start
+    service: soft-iot.zmq.start
+    url_path: /soft-iot/dlt/zmq/start
+    data_format: json
+  - name: zmq_handler_response
+    service: soft-iot.zmq.handler.response
+    url_path: /soft-iot/dlt/zmq/handler-response
+    data_format: json
+  - name: zmq_handler_request
+    service: soft-iot.zmq.handler.request
+    url_path: /soft-iot/dlt/zmq/handler-request
+    data_format: json
+
+  # K-Means
+  - name: kmeans_credibility_service
+    service: soft-iot.kmeans.credibility
+    url_path: /soft-iot/kmeans/credibility
+    data_format: json
+
+  # ID manager
+  - name: id_manager
+    service: soft-iot.id.manager
+    url_path: /soft-iot/id-manager
+    data_format: json
+
+  # Node type
+  - name: node_type
+    service: soft-iot.node.evaluation
+    url_path: /soft-iot/evaluate
+    data_format: json
+
+  # Reputation node
+  - name: reputation_credibility_manager
+    service: soft-iot.reputation.credibility.manager
+    url_path: /soft-iot/reputation/credibility/{evaluator_id}
+    data_format: json
+
+  # Service handler
+  - name: service_handler_calculate_reputation
     service: soft-iot.reputation.task.calculate
     url_path: /soft-iot/reputation/task/calculate-reputation
     data_format: json
-  - name: task_change_disturbing_behavior
+  - name: service_handler_change_disturbing_behavior
     service: soft-iot.reputation.task.change_disturbing_behavior
     url_path: /soft-iot/reputation/task/change-disturbing-behavior
     data_format: json
+  - name: service_handler_check_nodes_services
+    service: soft-iot.reputation.task.check_nodes_services
+    url_path: /soft-iot/reputation/task/check-nodes-services
+    data_format: json
+  - name: service_handler_wait_nodes_responses
+    service: soft-iot.reputation.task.wait_nodes_responses
+    url_path: /soft-iot/reputation/task/wait-nodes-resposes
+    data_format: json
+  - name: service_handler_select_best_node
+    service: soft-iot.reputation.task.select_best_node
+    url_path: /soft-iot/reputation/task/select-best-node
+    data_format: json
+  - name: service_handler_request_node_service
+    service: soft-iot.reputation.task.request_node_service
+    url_path: /soft-iot/reputation/task/request-node-service
+    data_format: json
 
-  # Depuração
-  - name: gateway_state_get
+  # Serviço de debug temporário
+  - name: service_handler_get_data_gateway
     service: soft-iot.gateway.state.get
     url_path: /soft-iot/reputation/task/get-data
     data_format: json
 
+
+
+  
+
 outgoing_rest:
+
 scheduler:
+  # - name: soft_iot_loca_storage_aggregation_service
+  #   is_active: True
+  #   service: soft-iot.aggregation.service
+  #   job_type: interval_based
+  #   start_date: "2025-11-29 19:19:19" # <--- Aspas aqui
+  #   minutes: 30
+  # - name: soft_iot_loca_storage_cleanup_service
+  #   is_active: True
+  #   service: soft-iot.cleanup.service
+  #   job_type: interval_based
+  #   start_date: "2025-11-29 19:20:20" # <--- Aspas aqui
+  #   hours: 2
+  # - name: start - local storage
+  #   is_active: True
+  #   service: soft-iot.storage.service
+  #   job_type: one_time
+  #   start_date: "2025-11-29 19:21:19" # <--- Aspas aqui
+
 ldap:
 sql:
 outgoing_soap:
@@ -57,21 +189,34 @@ elastic_search:
 pubsub_topic:
 pubsub_permission:
 pubsub_subscription:
-
 external_scheduler:
 
-  # Sobe ID, estado, storage e ZMQ, em ordem (ajuste ao tempo de boot no Fogbed)
-  - name: "Bootstrap"
-    url: "http://localhost:11223/soft-iot/bootstrap"
+  - name: "Agregação de Dados (tempo definido no script)"
+    url: "http://localhost:11223/soft-iot/local-storage/aggregation" # URL completa
+    job_type: "interval_based"
+    interval: 5 #chamada para ele verificar se há dados para agregar
+    unit: "minutes" # minutes, hours
+    
+  - name: "Limpeza (a cada 5 minutos)" #tempo deve ser maior do que o de agregação
+    url: "http://localhost:11223/soft-iot/local-storage/cleanup"
+    job_type: "interval_based"
+    interval: 20
+    unit: "minutes"
+
+  - name: "Inicialização do gerenciador de ID"
+    url: "http://localhost:11223/soft-iot/id-manager"
+    job_type: "one_time"
+    initial_delay: 5
+
+  - name: "Inicialização do banco de dados"
+    url: "http://localhost:11223/soft-iot/local-storage/start"
     job_type: "one_time"
     initial_delay: 10
-
-  # Agrega e depois limpa (só apaga o que a agregação marcou)
-  - name: "Manutenção do storage"
-    url: "http://localhost:11223/soft-iot/local-storage/maintenance"
-    job_type: "interval_based"
-    interval: 5
-    unit: "minutes"
+  
+  - name: "Inicialização do servidor ZMQ"
+    url: "http://localhost:11223/soft-iot/dlt/zmq/start"
+    job_type: "one_time"
+    initial_delay: 15
 
   - name: "Requisição de serviços"
     url: "http://localhost:11223/soft-iot/reputation/task/check-nodes-services"
@@ -90,3 +235,10 @@ external_scheduler:
     job_type: "interval_based"
     interval: 20
     unit: "seconds"
+
+  
+
+  # - name: "Inicializando teste - Credibility manager"
+  #   url: "http://localhost:11223/soft-iot/test"
+  #   job_type: "one_time"
+  #   initial_delay: 20 # Espera 15s após o Zato subir para chamar
