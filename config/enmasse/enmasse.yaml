@@ -73,20 +73,20 @@ external_scheduler:
     interval: 5
     unit: "minutes"
 
-  # - name: "Requisição de serviços"
-  #   url: "http://localhost:11223/soft-iot/reputation/task/check-nodes-services"
-  #   job_type: "interval_based"
-  #   interval: 20
-  #   unit: "seconds"
+  - name: "Requisição de serviços"
+    url: "http://localhost:11223/soft-iot/reputation/task/check-nodes-services"
+    job_type: "interval_based"
+    interval: 20
+    unit: "seconds"
 
-  # - name: "Cálculo da reputação atual"
-  #   url: "http://localhost:11223/soft-iot/reputation/task/calculate-reputation"
-  #   job_type: "interval_based"
-  #   interval: 20
-  #   unit: "seconds"
+  - name: "Cálculo da reputação atual"
+    url: "http://localhost:11223/soft-iot/reputation/task/calculate-reputation"
+    job_type: "interval_based"
+    interval: 20
+    unit: "seconds"
 
-  # - name: "Checagem de comportamento perturbador"
-  #   url: "http://localhost:11223/soft-iot/reputation/task/change-disturbing-behavior"
-  #   job_type: "interval_based"
-  #   interval: 20
-  #   unit: "seconds"
+  - name: "Checagem de comportamento perturbador"
+    url: "http://localhost:11223/soft-iot/reputation/task/change-disturbing-behavior"
+    job_type: "interval_based"
+    interval: 20
+    unit: "seconds"
