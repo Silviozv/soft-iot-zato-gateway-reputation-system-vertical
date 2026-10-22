@@ -32,7 +32,7 @@ BROKER_PORT_WS = 9001
 DB_FILENAME = "/opt/zato/env/soft_iot_data.db" # Caminho persistente dentro do container Zato
 DEFAULT_COLLECTION_TIME = int(os.getenv('Zato_COLLECTION_TIME', 5))
 DEFAULT_PUBLISHING_TIME = int(os.getenv('Zato_PUBLISH_TIME', 15))
-DEFAULT_RETENTION_SECONDS = 60
+DEFAULT_RETENTION_SECONDS = 60 
 
 
 # --- Controlador Singleton do MQTT e Banco de Dados ---
@@ -87,7 +87,7 @@ class LocalStorageController:
                         aggregation_status INTEGER DEFAULT 0
                     )
                 ''')
-                import os
+                
                 # Tabelas auxiliares (mantidas do original Java para compatibilidade futura)
                 cursor.execute('''
                     CREATE TABLE IF NOT EXISTS semantic_registered_last_time_sensors (
@@ -578,7 +578,7 @@ class AggregateSensorData(Service):
 
 class CleanupOldData(Service):
     """
-    Serviço de manutenção que relast_evaluation_bymove dados antigos do banco (baseado em SEGUNDOS).
+    Serviço de manutenção que remove dados antigos do banco (baseado em SEGUNDOS).
     """
     name = 'soft-iot.cleanup.service'
 
