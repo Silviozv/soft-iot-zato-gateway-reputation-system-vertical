@@ -10,7 +10,7 @@ import time
 from zato.server.service import Service
 
 
-logger = logging.getLogger('zato.reputation')
+logger = logging.getLogger('zato.trust')
 
 class ReputationOrchestrator(Service):
     """
