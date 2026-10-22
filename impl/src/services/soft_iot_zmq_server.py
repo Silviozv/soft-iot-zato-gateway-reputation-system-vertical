@@ -5,9 +5,9 @@ import json
 import os
 import logging
 
-from soft_iot_identity import IDManager
-from soft_iot_state import GatewayStateManager
-from soft_iot_behavior import NodeTypeManager
+from soft_iot_id_manager import IDManager
+from soft_iot_gateway_state import GatewayStateManager
+from soft_iot_node_type import NodeTypeManager
 
 import zmq.green as zmq
 
