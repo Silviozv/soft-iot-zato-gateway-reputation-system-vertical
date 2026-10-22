@@ -7,8 +7,8 @@ import random
 
 from zato.server.service import Service
 
-from soft_iot_identity import IDManager
-from soft_iot_state import GatewayStateManager
+from soft_iot_id_manager import IDManager
+from soft_iot_gateway_state import GatewayStateManager
 
 logger = logging.getLogger('zato.node.type')
 
@@ -144,3 +144,40 @@ class NodeEvaluationService(Service):
 
         return
     
+
+class ChangeDisturbingNodeBehaviorTask(Service):
+    """
+    Task para alterar o comportamento de um nó do tipo Perturbador (Tipo 4).
+    Versão otimizada: Consulta a reputação local em vez de recalcular.
+    """
+    name = 'soft-iot.reputation.task.change_disturbing_behavior'
+
+    REPUTATION_THRESHOLD = 0.9
+
+    def handle(self):
+        self.logger.info("Executando ChangeDisturbingNodeBehaviorTask...")
+
+        nt_manager = NodeTypeManager()
+        gs_manager = GatewayStateManager()
+
+        if nt_manager.node_type != 4:
+            self.response.payload = {"status": "ignored", "message": "not_disturbing_node"}
+            return
+
+        if  gs_manager.get_behavior_changed():
+            self.response.payload = {"status": "ignored", "message": "already_changed"}
+            return
+
+        reputation_value = gs_manager.get_reputation()
+        
+        self.logger.info(f"Reputação lida do armazenamento local: {reputation_value}")
+
+        if reputation_value > self.REPUTATION_THRESHOLD:
+            self.logger.info(f"Limiar de {self.REPUTATION_THRESHOLD} atingido. Alterando a flag de comportamento.")
+            
+            gs_manager.set_behavior_changed(True)
+            
+            self.response.payload = {"status": "success", "behavior_changed": True}
+        else:
+            self.response.payload = {"status": "success", "behavior_changed": False}
+        
