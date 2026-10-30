@@ -37,6 +37,12 @@ channel_rest:
     url_path: /soft-iot/devices/{device_id}/sensors/{sensor_id}/data/aggregated
     data_format: json
 
+  # Retorno de serviço para outro gateway (requisição direta, aplica a conduta de provedor)
+  - name: provider_service_data
+    service: soft-iot.api.provide-service-data
+    url_path: /soft-iot/provider/devices/{device_id}/sensors/{sensor_id}/data/latest
+    data_format: json
+
   # Start do local storage
   - name: local_storage_service_start
     service: soft-iot.storage.service
@@ -80,18 +86,32 @@ channel_rest:
     url_path: /soft-iot/dlt/transactions/id/{message_id}
     data_format: json
 
-  # ZMQ server
-  - name: zmq_server_start
-    service: soft-iot.zmq.start
-    url_path: /soft-iot/dlt/zmq/start
+  # ZMQ server (desativado: substituído pela conexão MQTT direta com o Hornet)
+  # - name: zmq_server_start
+  #   service: soft-iot.zmq.start
+  #   url_path: /soft-iot/dlt/zmq/start
+  #   data_format: json
+  # - name: zmq_handler_response
+  #   service: soft-iot.zmq.handler.response
+  #   url_path: /soft-iot/dlt/zmq/handler-response
+  #   data_format: json
+  # - name: zmq_handler_request
+  #   service: soft-iot.zmq.handler.request
+  #   url_path: /soft-iot/dlt/zmq/handler-request
+  #   data_format: json
+
+  # DLT MQTT (escuta em tempo real direto no broker MQTT do Hornet)
+  - name: dlt_mqtt_start
+    service: soft-iot.dlt.mqtt.start
+    url_path: /soft-iot/dlt/mqtt/start
     data_format: json
-  - name: zmq_handler_response
-    service: soft-iot.zmq.handler.response
-    url_path: /soft-iot/dlt/zmq/handler-response
+  - name: dlt_handler_response
+    service: soft-iot.dlt.handler.response
+    url_path: /soft-iot/dlt/mqtt/handler-response
     data_format: json
-  - name: zmq_handler_request
-    service: soft-iot.zmq.handler.request
-    url_path: /soft-iot/dlt/zmq/handler-request
+  - name: dlt_handler_request
+    service: soft-iot.dlt.handler.request
+    url_path: /soft-iot/dlt/mqtt/handler-request
     data_format: json
 
   # K-Means
@@ -116,6 +136,24 @@ channel_rest:
   - name: reputation_credibility_manager
     service: soft-iot.reputation.credibility.manager
     url_path: /soft-iot/reputation/credibility/{evaluator_id}
+    data_format: json
+
+  # Device trust (modelo vertical)
+  - name: device_register
+    service: soft-iot.device.register
+    url_path: /soft-iot/device/register
+    data_format: json
+  - name: device_evaluation
+    service: soft-iot.device.evaluation
+    url_path: /soft-iot/device/evaluation
+    data_format: json
+  - name: dlt_gateway_devices
+    service: soft-iot.dlt.gateway.devices
+    url_path: /soft-iot/dlt/gateway/devices
+    data_format: json
+  - name: reputation_device
+    service: soft-iot.reputation.device
+    url_path: /soft-iot/reputation/device
     data_format: json
 
   # Service handler
@@ -213,8 +251,8 @@ external_scheduler:
     job_type: "one_time"
     initial_delay: 10
   
-  - name: "Inicialização do servidor ZMQ"
-    url: "http://localhost:11223/soft-iot/dlt/zmq/start"
+  - name: "Inicialização da conexão MQTT com o Hornet"
+    url: "http://localhost:11223/soft-iot/dlt/mqtt/start"
     job_type: "one_time"
     initial_delay: 15
 

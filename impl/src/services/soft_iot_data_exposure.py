@@ -144,6 +144,58 @@ class GetLastData(BaseAPIService):
             self.response.payload = {'error': str(e)}
             self.response.status_code = 500
 
+class ProvideServiceData(BaseAPIService):
+    """
+    Retorno de serviço para outro gateway (requisição direta).
+    Aplica a conduta de provedor: o honesto repassa o último dado do device;
+    o malicioso (conforme a taxa de honestidade) injeta um dado inválido.
+    """
+    name = 'soft-iot.api.provide-service-data'
+
+    def handle(self):
+        device_id, sensor_id = self._require_device_and_sensor()
+
+        if not device_id:
+            return
+
+        try:
+            item = self._get_last(device_id, sensor_id, aggregated=None)
+
+            if item is None:
+                self.logger.warning(f"Sensor {device_id}/{sensor_id} não encontrado no banco local.")
+                self.response.status_code = 404
+                self.response.payload = {'error': 'Device or sensor not found', 'data': None}
+                return
+
+            # Conduta de provedor
+            # Import local: o Zato carrega os arquivos em ordem alfabética, e este módulo
+            # vem antes dos que ele usa. No momento da chamada, todos já estão carregados.
+            from soft_iot_node_type import NodeTypeManager
+            from soft_iot_gateway_state import GatewayStateManager
+            from soft_iot_device_trust import INVALID_DATA_VALUE
+
+            nt_manager = NodeTypeManager()
+            gs_manager = GatewayStateManager()
+            nt_manager.define_conduct(gs_manager.get_behavior_changed())
+            conduct = nt_manager.current_conduct
+
+            if conduct == "MALICIOUS":
+                self.logger.warning(
+                    f"[PROVEDOR] Conduta MALICIOSA: injetando dado inválido para {device_id}/{sensor_id} "
+                    f"(dado real: {item.get('data_value')})."
+                )
+                item = dict(item)
+                item['data_value'] = INVALID_DATA_VALUE
+            else:
+                self.logger.info(f"[PROVEDOR] Conduta {conduct}: repassando dado de {device_id}/{sensor_id}.")
+
+            self.response.payload = {'data': item}
+
+        except Exception as e:
+            self.logger.error(f"Erro na API ProvideServiceData: {e}")
+            self.response.payload = {'error': str(e)}
+            self.response.status_code = 500
+
 class GetSensorHistory(BaseAPIService):
     """
     Retorna histórico de dados com filtros opcionais de data.

@@ -32,7 +32,10 @@ BROKER_PORT_WS = 9001
 DB_FILENAME = "/opt/zato/env/soft_iot_data.db" # Caminho persistente dentro do container Zato
 DEFAULT_COLLECTION_TIME = int(os.getenv('Zato_COLLECTION_TIME', 5))
 DEFAULT_PUBLISHING_TIME = int(os.getenv('Zato_PUBLISH_TIME', 15))
-DEFAULT_RETENTION_SECONDS = 60 
+DEFAULT_RETENTION_SECONDS = 60
+
+# Intervalo (s) para enviar à Tangle as avaliações acumuladas de cada device
+DEVICE_EVAL_FLUSH_SECONDS = int(os.getenv('Zato_DEVICE_EVAL_FLUSH_SECONDS', 20))
 
 
 # --- Controlador Singleton do MQTT e Banco de Dados ---
@@ -48,6 +51,7 @@ class LocalStorageController:
                     cls._instance = super(LocalStorageController, cls).__new__(cls)
                     cls._instance.is_running = False
                     cls._instance.client = None
+                    cls._instance.server = None  # Servidor Zato, usado para invocar serviços (registro e avaliação)
         return cls._instance
 
     def start(self, logger):
@@ -60,6 +64,13 @@ class LocalStorageController:
         
         #Inicializa memória temporária para auto-cadastro
         self.pending_registration = {}
+
+        # Buffer de dados aguardando avaliação e thread que envia as avaliações
+        self.eval_buffer = {}
+        self.eval_lock = threading.Lock()
+        self.eval_thread = threading.Thread(target=self._evaluation_loop, name="DeviceEvaluationThread")
+        self.eval_thread.daemon = True
+        self.eval_thread.start()
 
         # 1. Inicializar Banco de Dados
         self.init_db()
@@ -242,6 +253,9 @@ class LocalStorageController:
             if data_list:
                 self.logger.info(f"Armazenando {len(data_list)} registros para Dev: {device_id}, Sensor: {sensor_id}")
                 self.store_sensor_data(device_id, sensor_id, data_list)
+
+                # Avaliação do dado recebido (conduta de avaliador do gateway)
+                self.evaluate_device_data(device_id, sensor_id, data_list)
             else:
                 self.logger.warning("Resposta TATU válida mas sem dados extraíveis.")
 
@@ -353,6 +367,61 @@ class LocalStorageController:
         except Exception as e:
             self.logger.error(f"Erro SQL ao inserir dados: {e}")
 
+    def evaluate_device_data(self, device_id, sensor_id, data_list):
+        """
+        Guarda os dados recebidos para avaliação. Não chama a Tangle aqui para não
+        travar a thread do MQTT; a thread de avaliação envia os lotes periodicamente.
+        """
+        try:
+            with self.eval_lock:
+                entry = self.eval_buffer.setdefault(device_id, {"values": [], "sensor_ids": []})
+                entry["values"].extend(item['value'] for item in data_list)
+                if sensor_id not in entry["sensor_ids"]:
+                    entry["sensor_ids"].append(sensor_id)
+        except Exception as e:
+            self.logger.error(f"Erro ao guardar dados para avaliação do device {device_id}: {e}")
+
+    def _evaluation_loop(self):
+        """Thread dedicada: a cada DEVICE_EVAL_FLUSH_SECONDS, avalia os dados acumulados de cada device."""
+        while True:
+            time.sleep(DEVICE_EVAL_FLUSH_SECONDS)
+
+            with self.eval_lock:
+                pending = self.eval_buffer
+                self.eval_buffer = {}
+
+            if not pending:
+                continue
+
+            if not self.server:
+                self.logger.warning("Servidor Zato indisponível. Avaliação do device não realizada.")
+                continue
+
+            for device_id, entry in pending.items():
+                try:
+                    self.server.invoke_async('soft-iot.device.evaluation', {
+                        "device_id": device_id,
+                        "sensor_ids": entry["sensor_ids"],
+                        "values": entry["values"]
+                    }, None)
+                except Exception as e:
+                    self.logger.error(f"Erro ao despachar avaliação do device {device_id}: {e}")
+
+    def register_device_on_dlt(self, device_id, device_info):
+        """Despacha o registro do device na Tangle para o serviço Zato."""
+        if not self.server:
+            self.logger.warning("Servidor Zato indisponível. Registro do device na Tangle não realizado.")
+            return
+
+        try:
+            self.server.invoke_async('soft-iot.device.register', {
+                "device_id": device_id,
+                "device": device_info
+            }, None)
+            self.logger.info(f"Registro do device {device_id} encaminhado para a Tangle.")
+        except Exception as e:
+            self.logger.error(f"Erro ao despachar registro do device {device_id}: {e}")
+
     def handle_device_connected(self, device_id):
         self.logger.info(f"ENTREI NO HANDLE_DEVICE_CONNECTED PARA O ID: '{device_id}'")
         """Envia requisição de FLOW quando um dispositivo conecta."""
@@ -391,7 +460,11 @@ class LocalStorageController:
                     self.logger.error(f"Sem dados para auto-cadastrar {device_id}.")
                     return
 
-            # 3. Envio dos comandos FLOW
+            # 3. Registro do device na Tangle (antes de pedir o envio contínuo de dados)
+            if device_info:
+                self.register_device_on_dlt(device_id, device_info)
+
+            # 4. Envio dos comandos FLOW
             if device_info:
                 sensors = device_info.get('sensors', [])
                 self.logger.info(f"Iniciando configuração de {len(sensors)} sensores para {device_id}...")
@@ -444,6 +517,9 @@ class SoftIoTStorageService(Service):
     def handle(self):
         # Usa o logger nativo do Zato
         controller = LocalStorageController()
+
+        # Referência ao servidor Zato para o controlador invocar serviços (mesmo padrão do ZMQ Manager)
+        controller.server = self.server
         
         # Verifica se já está rodando (Singleton)
         if not controller.is_running:

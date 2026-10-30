@@ -13,6 +13,16 @@ class GatewayStateManager:
 
     _STATE_KEY = 'gateway_state'
 
+    # Colunas adicionadas para o modelo vertical (gateway + device)
+    _VERTICAL_REQUEST_COLUMNS = [
+        ('requested_service', 'TEXT'),
+        ('id_device', 'TEXT'),
+        ('id_sensor', 'TEXT'),
+        ('reputation_device', 'REAL'),
+        ('reputation_joint', 'REAL'),
+        ('received_data_value', 'TEXT'),
+    ]
+
     def __init__(self, db_path='/tmp/gateway_state.db'):
         self.db_path = db_path
         self.logger = logging.getLogger('zato.gateway.state')
@@ -67,9 +77,22 @@ class GatewayStateManager:
                             start_request_time DATETIME,
                             finish_request_time DATETIME,
                             reputation_evaluator REAL,
-                            status TEXT
+                            status TEXT,
+                            requested_service TEXT,
+                            id_device TEXT,
+                            id_sensor TEXT,
+                            reputation_device REAL,
+                            reputation_joint REAL,
+                            received_data_value TEXT
                         )
                     ''')
+
+                    # Migração: adiciona as colunas do modelo vertical em bancos já existentes
+                    cursor.execute('PRAGMA table_info(requests)')
+                    existing_columns = {row[1] for row in cursor.fetchall()}
+                    for column_name, column_type in self._VERTICAL_REQUEST_COLUMNS:
+                        if column_name not in existing_columns:
+                            cursor.execute(f'ALTER TABLE requests ADD COLUMN {column_name} {column_type}')
 
                     cursor.execute('''
                         CREATE TABLE IF NOT EXISTS responses (
@@ -264,6 +287,47 @@ class GatewayStateManager:
             self.logger.error(f"Erro ao buscar o tempo de início para o ID {request_id}: {e}")
             return None
     
+    def set_requested_service(self, request_id, requested_service):
+        """
+        Grava o serviço pedido na requisição.
+        """
+        try:
+            with closing(self._get_connection()) as conn:
+                with conn:
+                    cursor = conn.cursor()
+                    cursor.execute('''
+                        UPDATE requests
+                        SET requested_service = ?
+                        WHERE id = ?
+                    ''', (requested_service, request_id))
+                    conn.commit()
+                    return cursor.rowcount > 0
+        except Exception as e:
+            self.logger.error(f"Erro ao gravar serviço pedido da requisição {request_id}: {e}")
+            return False
+
+    def update_request_device_data(self, request_id, device_id, sensor_id, reputation_device,
+                                   reputation_joint, received_data_value):
+        """
+        Grava os dados do device escolhido (modelo vertical) na requisição.
+        """
+        try:
+            with closing(self._get_connection()) as conn:
+                with conn:
+                    cursor = conn.cursor()
+                    cursor.execute('''
+                        UPDATE requests
+                        SET id_device = ?, id_sensor = ?, reputation_device = ?,
+                            reputation_joint = ?, received_data_value = ?
+                        WHERE id = ?
+                    ''', (device_id, sensor_id, reputation_device, reputation_joint,
+                          None if received_data_value is None else str(received_data_value), request_id))
+                    conn.commit()
+                    return cursor.rowcount > 0
+        except Exception as e:
+            self.logger.error(f"Erro ao gravar dados do device da requisição {request_id}: {e}")
+            return False
+
     def update_request_status(self, request_id, new_status):
         """
         Atualiza estritamente a coluna de status de uma requisição específica.

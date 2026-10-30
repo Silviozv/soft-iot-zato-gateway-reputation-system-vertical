@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Executa N rodadas do experimento (ZMQ + API + Gateways + Devices), cada uma por X minutos,
+Executa N rodadas do experimento (Gateways com API Tangle embutida e MQTT direto no Hornet + Devices),
+cada uma por X minutos,
 e coleta os dados de cada rodada em data_relatorio_final/run_N.
 
 A Tangle (Hornet) NAO é iniciada aqui: suba-a antes, manualmente.
@@ -45,12 +46,17 @@ GATEWAYS = [
 
 DEVICES_PER_GATEWAY = 1
 
+# Taxa de sucesso (0 a 100) dos devices de cada gateway -> vai para SUCCESS_RATE do device.
+# Device honesto: 100. Device malicioso: < 100. Opcionalmente, use "device_success_rate"
+# no item do gateway em GATEWAYS para sobrescrever este valor.
+DEVICE_SUCCESS_RATE = 100
+
 # Execução
 RUNS = 5                      # quantidade de rodadas
-DURATION_MINUTES = 100          # tempo de cada rodada (contado após subir os containers)
+DURATION_MINUTES = 10          # tempo de cada rodada (contado após subir os containers)
 WARMUP_SECONDS = 0             # tempo extra de aquecimento antes de contar os minutos
 COOLDOWN_SECONDS = 30          # pausa entre rodadas
-MAX_RETRIES_PER_RUN = 2        # se a subida falhar (ex.: IP inesperado), tenta de novo
+MAX_RETRIES_PER_RUN = 2        # se a subida falhar (ex.: gateway não subiu), tenta de novo
 EXPERIMENT_NAME = "experimento"  # só informativo, vai para o meta.json
 
 # Coleta
@@ -60,14 +66,18 @@ EXTRACT_ENDPOINT = "/soft-iot/reputation/task/get-data"
 SAVE_DOCKER_LOGS = True        # salva `docker logs` de cada gateway junto com os dados
 
 # Imagens
-IMG_ZMQ = "silviozv/iota-zmq-bridge:1.0.0"
-IMG_API = "silviozv/tangle-hornet-api:1.0.2"
+# Imagem do gateway com a Tangle Hornet API embutida (Dockerfile com estágio de build da API)
 IMG_GATEWAY = "silviozv/soft-iot-gateway-zato-vertical:1.0.0"
-IMG_DEVICE = "silviozv/python-iot-device:1.0.0"
+IMG_DEVICE = "silviozv/python-iot-device:1.0.1"
 
-# gat0 = 172.17.0.{IP_BASE}, gat1 = 172.17.0.{IP_BASE+1}, ...
-# (a bridge padrão do Docker não aceita --ip, então o IP é verificado após subir)
-IP_BASE = 6
+# Porta da Tangle Hornet API dentro de cada gateway (o gateway acessa via 127.0.0.1)
+API_PORT = "3000"
+
+# Porta do broker MQTT do Hornet (eventos da Tangle em tempo real)
+HORNET_MQTT_PORT = "1883"
+
+# O IP de cada gateway não é mais fixado aqui: sem Zato_GATEWAY_REAL_IP, o próprio
+# gateway descobre o seu IP no container (IDManager) e o anuncia aos demais.
 
 
 # =====================================================================
@@ -84,7 +94,7 @@ def docker(*args, capture=False):
 
 
 def nomes_containers():
-    nomes = ["zmq0", "api0"]
+    nomes = []
     for i in range(len(GATEWAYS)):
         nomes.append(f"gat{i}")
         nomes += [f"dev_{i}_{z}" for z in range(DEVICES_PER_GATEWAY)]
@@ -92,7 +102,7 @@ def nomes_containers():
 
 
 def limpar_ambiente():
-    print("[INFO] Removendo contêineres (zmq, api, gateways, devices)...")
+    print("[INFO] Removendo contêineres (gateways, devices)...")
     docker("rm", "-f", *nomes_containers())
 
 
@@ -112,24 +122,8 @@ def container_rodando(nome):
 # SUBIDA DO AMBIENTE
 # =====================================================================
 
-def iniciar_zmq():
-    docker("run", "-d", "--name", "zmq0", "--network", "bridge",
-           "-e", f"MQTT_IP={HORNET_IP}",
-           "-e", "INDEXES=REP_*",
-           IMG_ZMQ)
-
-
-def iniciar_api():
-    docker("run", "-d", "--name", "api0", "--network", "bridge",
-           "-e", "API_PORT=3000",
-           "-e", f"TANGLE_NODE_URL={HORNET_IP}",
-           "-e", "TANGLE_NODE_PORT=14265",
-           IMG_API, "./entrypoint.sh")
-
-
 def iniciar_gateway(i, cfg):
     nome = f"gat{i}"
-    ip_esperado = f"172.17.0.{IP_BASE + i}"
     env = {
         "Zato_Dashboard_Password": "123456",
         "ZATO_SSH_PASSWORD": "123456",
@@ -140,55 +134,60 @@ def iniciar_gateway(i, cfg):
         "Zato_PUBLISH_TIME": "6",
         "Zato_AGGREGATION_WINDOW_MINUTES": "10",
         "Zato_DATA_RETENTION_SECONDS": "1200",
-        "Zato_TANGLE_API_IP": "api0",
-        "Zato_TANGLE_API_PORT": "3000",
-        "Zato_ZMQ_IP": "zmq0",
-        "Zato_ZMQ_PORT": "5556",
+        # API Tangle embutida: o entrypoint.sh gera /etc/tangle-hornet.conf com estes valores
+        "API_PORT": API_PORT,
+        "TANGLE_NODE_URL": HORNET_IP,
+        "TANGLE_NODE_PORT": "14265",
+        "Zato_TANGLE_API_IP": "127.0.0.1",
+        "Zato_TANGLE_API_PORT": API_PORT,
+        # Escuta em tempo real direto no broker MQTT do Hornet (substitui a ponte ZMQ)
+        "Zato_DLT_MQTT_IP": HORNET_IP,
+        "Zato_DLT_MQTT_PORT": HORNET_MQTT_PORT,
+        "Zato_DLT_MQTT_INDEXES": "REP_HAS_SVC",
         "Zato_NODE_TYPE": str(cfg["node_type"]),
         "Zato_HONESTY_RATE": str(cfg["honesty_rate"]),
         "Zato_GROUP": "cloud/c1",
-        "Zato_GATEWAY_REAL_IP": ip_esperado,
     }
     args = ["run", "-d", "--name", nome, "--network", "bridge",
-            "--link", "zmq0:zmq0", "--link", "api0:api0"]
+            "--entrypoint", "bash"]
     for k, v in env.items():
         args += ["-e", f"{k}={v}"]
-    args += [IMG_GATEWAY, "bash", "-c", "sleep 10 && /usr/local/bin/start_wrapper.sh"]
+    # O entrypoint.sh da imagem sobe a API em segundo plano e depois o Zato.
+    # O --entrypoint bash mantém a espera de 10 s antes de iniciar.
+    args += [IMG_GATEWAY, "-c", "sleep 10 && /usr/local/bin/entrypoint.sh"]
     docker(*args)
-    return nome, ip_esperado
+    return nome
 
 
 def iniciar_device(i, z):
     nome_gat = f"gat{i}"
+    taxa_sucesso = GATEWAYS[i].get("device_success_rate", DEVICE_SUCCESS_RATE)
     docker("run", "-d", "--name", f"dev_{i}_{z}", "--network", "bridge",
            "--link", f"{nome_gat}:{nome_gat}",
            "-e", f"BROKER_IP={nome_gat}",
            "-e", "BROKER_PORT=1883",
+           "-e", f"SUCCESS_RATE={taxa_sucesso}",
            IMG_DEVICE,
            "bash", "-c", "sleep 120; python -m app.main; tail -f /dev/null")
 
 
 def subir_ambiente():
-    """Sobe tudo. Retorna True se os IPs dos gateways baterem com o esperado."""
+    """Sobe tudo. Retorna True se todos os gateways estiverem rodando e com IP."""
     limpar_ambiente()
-
-    print("[INFO] Iniciando ZMQ e API...")
-    iniciar_zmq()
-    iniciar_api()
 
     print("[INFO] Iniciando gateways...")
     for i, cfg in enumerate(GATEWAYS):
-        nome, ip_esperado = iniciar_gateway(i, cfg)
-        print(f"  [+] {nome}  tipo={cfg['node_type']}  honestidade={cfg['honesty_rate']}  "
-              f"IP esperado={ip_esperado}")
+        iniciar_gateway(i, cfg)
 
     ok = True
-    for i in range(len(GATEWAYS)):
-        nome, esperado = f"gat{i}", f"172.17.0.{IP_BASE + i}"
-        real = ip_do_container(nome)
-        if real != esperado:
-            print(f"  [!] {nome}: IP real {real or 'N/D'} != esperado {esperado}")
+    for i, cfg in enumerate(GATEWAYS):
+        nome = f"gat{i}"
+        ip = ip_do_container(nome)
+        if not ip or not container_rodando(nome):
+            print(f"  [!] {nome}: container não está rodando ou sem IP")
             ok = False
+            continue
+        print(f"  [+] {nome}  tipo={cfg['node_type']}  honestidade={cfg['honesty_rate']}  IP={ip}")
     if not ok:
         return False
 
@@ -339,6 +338,7 @@ def executar_rodada(minutos, indice, total):
         "duracao_minutos": minutos,
         "warmup_segundos": WARMUP_SECONDS,
         "devices_por_gateway": DEVICES_PER_GATEWAY,
+        "device_success_rate": DEVICE_SUCCESS_RATE,
         "gateways": GATEWAYS,
         "coleta": resultado,
     }

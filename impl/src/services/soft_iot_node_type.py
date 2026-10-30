@@ -133,12 +133,13 @@ class NodeEvaluationService(Service):
         final_evaluation_value = float(evaluation_value) if evaluation_value is not None else 0.0
         
         if conduct == "MALICIOUS":
-            # Malicioso avalia como ruim
+            # Malicioso inverte a avaliação correta (dado válido -> 0, dado inválido -> 1)
+            inverted_service_evaluation = 1 - final_service_evaluation
             self.logger.info(
-                f"Ataque Malicioso: Alterando avaliação de {final_service_evaluation} para 0"
+                f"Ataque Malicioso: Invertendo avaliação de {final_service_evaluation} para {inverted_service_evaluation}"
             )
-            final_service_evaluation = 0
-            final_evaluation_value = 0.0
+            final_service_evaluation = inverted_service_evaluation
+            final_evaluation_value = float(inverted_service_evaluation)
             
         self.response.payload = {"status": "success", "conduct_applied": conduct, "final_evaluation_value": final_evaluation_value, "final_service_evaluation": final_service_evaluation}
 
@@ -180,4 +181,4 @@ class ChangeDisturbingNodeBehaviorTask(Service):
             self.response.payload = {"status": "success", "behavior_changed": True}
         else:
             self.response.payload = {"status": "success", "behavior_changed": False}
-        
+        

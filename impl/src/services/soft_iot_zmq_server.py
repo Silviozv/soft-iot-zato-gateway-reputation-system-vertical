@@ -4,6 +4,7 @@ import threading
 import json
 import os
 import logging
+import sqlite3
 
 from soft_iot_id_manager import IDManager
 from soft_iot_gateway_state import GatewayStateManager
@@ -16,6 +17,7 @@ from zato.server.service import Service
 logger = logging.getLogger('zato.zmq') 
 
 CONFIG_FILE_PATH = '/home/ubuntu/mapping_archives/devices_config/devices.json'
+DATA_DB_FILENAME = '/opt/zato/env/soft_iot_data.db'  # Mesmo banco do armazenamento local
 
 class ZMQManager:
     """
@@ -168,6 +170,33 @@ class ZMQRequestHandlerService(Service):
             logger.error(f"Erro ao ler devices.json: {e}")
             return []
 
+    def _has_stored_data(self, device_id, sensor_id):
+        """
+        Verifica se já existe algum dado armazenado para o par device/sensor.
+        Evita anunciar um serviço de um device que ainda não enviou dados.
+        """
+        # Com a persistência desligada não há como verificar; mantém o comportamento anterior
+        if os.getenv('Zato_SAVE_DATA_ENABLED', 'True') == 'False':
+            return True
+
+        try:
+            if not os.path.exists(DATA_DB_FILENAME):
+                return False
+
+            conn = sqlite3.connect(DATA_DB_FILENAME, timeout=5)
+            try:
+                cursor = conn.cursor()
+                cursor.execute(
+                    'SELECT 1 FROM sensor_data WHERE device_id = ? AND sensor_id = ? LIMIT 1',
+                    (device_id, sensor_id)
+                )
+                return cursor.fetchone() is not None
+            finally:
+                conn.close()
+        except Exception as e:
+            logger.error(f"Erro ao verificar dados de {device_id}/{sensor_id}: {e}")
+            return False
+
     def handle(self):
         payload = self.request.payload
         
@@ -195,34 +224,28 @@ class ZMQRequestHandlerService(Service):
         nt_manager.define_conduct(behavior_changed)
         current_conduct = nt_manager.current_conduct
 
+        # Egoísta omite que possui o serviço e não recebe requisições diretas
+        if current_conduct == "SELFISH":
+            logger.info(f"Conduta EGOÍSTA ativa: omitindo resposta para o serviço '{requested_service}'.")
+            return
+
+        # O gateway apenas verifica se algum device conectado possui o serviço.
+        # A escolha do device é feita pelo requisitor, consultando a Tangle.
+        # A conduta maliciosa de provedor é aplicada somente na requisição direta.
+        devices = self._load_devices_from_file()
+
         matched_services = []
+        for device in devices:
+            device_id = device.get('id')
+            sensors = device.get('sensors', [])
 
-        if current_conduct == "MALICIOUS":
-            logger.warning(f"Conduta MALICIOSA ativa: Ocultando sensores reais e publicando falsos para '{requested_service}'.")
-            
-            # Adiciona estritamente o dispositivo e sensor inexistentes (Spoofing)
-            matched_services.append({
-                "device_id": "nonexistentDevice",
-                "sensor_id": "nonexistentSensor"
-            })
+            for sensor in sensors:
+                if sensor.get('type') == requested_service and self._has_stored_data(device_id, sensor.get('id')):
+                    matched_services.append({
+                        "device_id": device_id,
+                        "sensor_id": sensor.get('id')
+                    })
 
-        else:
-            # Conduta HONEST, SELFISH ou Perturbador antes da mudança
-            logger.info("Conduta regular ativa: Buscando sensores reais no arquivo local.")
-            devices = self._load_devices_from_file()
-
-            # Buscando sensores reais com serviço requisitado
-            for device in devices:
-                device_id = device.get('id')
-                sensors = device.get('sensors', [])
-                
-                for sensor in sensors:
-                    if sensor.get('type') == requested_service:
-                        matched_services.append({
-                            "device_id": device_id,
-                            "sensor_id": sensor.get('id')
-                        })
-        
         if matched_services:
             logger.info(f"Encontrados {len(matched_services)} sensores compatíveis. Preparando REP_SVC_RES.")
             
@@ -238,7 +261,9 @@ class ZMQRequestHandlerService(Service):
                 "source": my_gateway_id,
                 "ipSource": my_ip,
                 "group": my_group,
-                "services": matched_services
+                "requestedService": requested_service,
+                "hasService": True,
+                "services": []  # Os devices não são listados; o requisitor os consulta na Tangle
             }
 
             # Comunicação nativa via memória (Zero HTTP Overhead)

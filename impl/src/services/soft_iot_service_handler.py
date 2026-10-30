@@ -15,6 +15,10 @@ from zato.server.service import Service
 from soft_iot_node_type import NodeTypeManager
 from soft_iot_gateway_state import GatewayStateManager
 
+# Pesos da reputação conjunta da dupla gateway/device (50-50)
+GATEWAY_REPUTATION_WEIGHT = 0.5
+DEVICE_REPUTATION_WEIGHT = 0.5
+
 
 class GetGatewayStateService(Service):
     """
@@ -150,6 +154,7 @@ class CheckNodesServicesTask(Service):
             return 
         
         request_id = gs_manager.create_request(my_gateway_id)
+        gs_manager.set_requested_service(request_id, chosen_service)
 
 
         # Estrutura do payload da requisição 
@@ -174,7 +179,7 @@ class CheckNodesServicesTask(Service):
                 self.logger.info(f"Requisição do serviço {chosen_service} publicada no índice '{broadcast_index}'.")
             
                 # Dispara o loop de contagem no Zato de forma assíncrona (não bloqueia esta task)
-                self.invoke_async('soft-iot.reputation.task.wait_nodes_responses', {'request_id': request_id}, None)
+                self.invoke_async('soft-iot.reputation.task.wait_nodes_responses', {'request_id': request_id, 'requested_service': chosen_service}, None)
 
                 self.response.payload = {"status": "Request created"}
                 return 
@@ -202,6 +207,7 @@ class WaitNodesResponsesTask(Service):
         # Recupera os dados enviados pela CheckNodesServicesTask
         payload = self.request.payload or {}
         request_id = payload.get('request_id')
+        requested_service = payload.get('requested_service')
         
         # Define o tempo da janela de coleta (ex: 15 segundos)
         wait_time = payload.get('wait_time', 10) 
@@ -227,7 +233,7 @@ class WaitNodesResponsesTask(Service):
             # Muda o status
             gs_manager.update_request_status(request_id, 'CHOSING_BETTER_NODE')
             
-            self.invoke_async('soft-iot.reputation.task.select_best_node', {"request_id": request_id}, None)
+            self.invoke_async('soft-iot.reputation.task.select_best_node', {"request_id": request_id, "requested_service": requested_service}, None)
             
         else:
             self.logger.warning(
@@ -237,18 +243,21 @@ class WaitNodesResponsesTask(Service):
 
 class SelectBestNodeTask(Service):
     """
-    Task que analisa candidatos, calcula reputação e seleciona o melhor nó.
+    Task que analisa candidatos e seleciona a melhor dupla gateway/device.
+    Para cada gateway que respondeu, consulta na Tangle os devices com o serviço pedido,
+    calcula a reputação do gateway e de cada device e usa a reputação conjunta (50-50).
     """
     name = 'soft-iot.reputation.task.select_best_node'
 
     def handle(self):
         request_id = self.request.payload.get('request_id')
+        requested_service = self.request.payload.get('requested_service')
         
         if not request_id:
             self.logger.error("request_id não fornecido para SelectBestNodeTask.")
             return
 
-        self.logger.info(f"Iniciando análise de candidatos para a requisição {request_id}...")
+        self.logger.info(f"Iniciando análise de candidatos para a requisição {request_id} (serviço: {requested_service})...")
         
         gs_manager = GatewayStateManager()
         responses = gs_manager.get_responses_for_request(request_id)
@@ -258,62 +267,92 @@ class SelectBestNodeTask(Service):
             gs_manager.finalize_request(request_id, 'FAILED')
             return
 
-        # Estruturando dados das respostas
+        # Estruturando dados das respostas (um registro por gateway)
         node_metadata = {}
         
         for res in responses:
             node_id = res['source']
             ip_source = res['ip_source']
-            services = res['services']
             
             node_metadata[node_id] = {
-                "ip": ip_source,
-                "services": services
+                "ip": ip_source
             }
 
         self.logger.info(f"QUEM RESPONDEU: {node_metadata}...")
 
         candidates_ranking = []
 
-        # Calcula a reputação para cada nó único
         for node_id, data in node_metadata.items():
             try:
+                # Devices do gateway que possuem o serviço (consulta na Tangle)
+                devices = self.invoke('soft-iot.dlt.gateway.devices', {
+                    'gateway_id': node_id,
+                    'service': requested_service
+                })
+
+                if not isinstance(devices, list) or not devices:
+                    self.logger.warning(f"Gateway {node_id} não possui devices registrados na Tangle com o serviço '{requested_service}'.")
+                    continue
+
+                # Reputação do gateway
                 self.logger.info(f"Calculando reputação para: {node_id}")
-                
                 rep_res = self.invoke('soft-iot.reputation.orchestrator', {'node_id': node_id})
                 
                 # Fallback de segurança para 0.5
                 if rep_res and (rep_res.get('status') == 'success' or rep_res.get('status') == 'no_data'):
-                    reputation_score = rep_res.get('reputation', 0.5)
+                    gateway_reputation = rep_res.get('reputation', 0.5)
                 else:
-                    reputation_score = 0.5
-                
-                candidates_ranking.append({
-                    "node_id": node_id,
-                    "ip_source": data['ip'],
-                    "services": data['services'], 
-                    "reputation": reputation_score
-                })
+                    gateway_reputation = 0.5
+
+                # Reputação de cada device e reputação conjunta da dupla
+                for device in devices:
+                    device_id = device.get('device_id')
+                    sensor_id = device.get('sensor_id')
+
+                    dev_res = self.invoke('soft-iot.reputation.device', {
+                        'device_id': device_id,
+                        'gateway_id': node_id
+                    })
+
+                    if dev_res and (dev_res.get('status') == 'success' or dev_res.get('status') == 'no_data'):
+                        device_reputation = dev_res.get('reputation', 0.5)
+                    else:
+                        device_reputation = 0.5
+
+                    joint_reputation = (GATEWAY_REPUTATION_WEIGHT * gateway_reputation) + \
+                                       (DEVICE_REPUTATION_WEIGHT * device_reputation)
+
+                    candidates_ranking.append({
+                        "node_id": node_id,
+                        "ip_source": data['ip'],
+                        "device_id": device_id,
+                        "sensor_id": sensor_id,
+                        "requested_service": requested_service,
+                        "reputation": gateway_reputation,          # Reputação do gateway (usada na credibilidade)
+                        "device_reputation": device_reputation,
+                        "joint_reputation": round(joint_reputation, 4)
+                    })
                     
             except Exception as e:
                 self.logger.error(f"Erro ao processar candidato {node_id}: {e}")
 
-        self.logger.info(f"RANKING: {node_metadata}...")
+        self.logger.info(f"RANKING: {candidates_ranking}...")
 
-        # Ordenação: Maior reputação primeiro
-        candidates_ranking.sort(key=lambda x: x['reputation'], reverse=True)
+        # Ordenação: Maior reputação conjunta primeiro
+        candidates_ranking.sort(key=lambda x: x['joint_reputation'], reverse=True)
 
         if not candidates_ranking:
-            self.logger.error("Falha ao gerar ranking.")
-            gs_manager.finalize_request(request_id, 'FAILED')
+            self.logger.error("Falha ao gerar ranking (nenhuma dupla gateway/device disponível).")
+            gs_manager.finalize_request(request_id, 'FAILED_NO_SERVICES')
             return
 
         # Seleção do Vencedor
         best_node = candidates_ranking[0]
         
         self.logger.info(
-            f"Melhor nó: {best_node['node_id']} | Reputação: {best_node['reputation']} | "
-            f"Serviços Oferecidos: {len(best_node['services'])}"
+            f"Melhor dupla: gateway {best_node['node_id']} (rep {best_node['reputation']}) / "
+            f"device {best_node['device_id']} (rep {best_node['device_reputation']}) | "
+            f"Reputação conjunta: {best_node['joint_reputation']}"
         )
 
         gs_manager.update_request_status(request_id, 'REQUESTING_SERVICE')
@@ -327,8 +366,9 @@ class SelectBestNodeTask(Service):
 
 class RequestNodeServiceTask(Service):
     """
-    Task que realiza a requisição HTTP direta (Ponto-a-Ponto) para o Gateway provedor,
-    consumindo os dados do sensor solicitado sem passar pela Tangle.
+    Task que realiza a requisição HTTP direta (Ponto-a-Ponto) para a dupla gateway/device escolhida,
+    consumindo o dado do sensor solicitado sem passar pela Tangle.
+    Apenas o gateway provedor é avaliado.
     """
     name = 'soft-iot.reputation.task.request_node_service'
 
@@ -345,86 +385,73 @@ class RequestNodeServiceTask(Service):
             return
         
         ip_target = best_node.get('ip_source')
-        services = best_node.get('services', [])
         node_id = best_node.get('node_id')
+        device_id = best_node.get('device_id')
+        sensor_id = best_node.get('sensor_id')
         
-        self.logger.info(f"Iniciando consumo direto de dados do Gateway {node_id} (IP: {ip_target})...")
+        self.logger.info(f"Iniciando consumo direto de dados do Gateway {node_id} (IP: {ip_target}) / Device {device_id}...")
 
-        # Verifica se o nó ofereceu algum serviço válido
-        if not services:
-            self.logger.warning(f"O nó {node_id} não possui dispositivos/sensores listados.")
+        if not device_id or not sensor_id:
+            self.logger.warning(f"Dupla escolhida sem device/sensor (gateway {node_id}).")
             gs_manager.finalize_request(request_id, 'FAILED_NO_SERVICES')
             return
 
-        collected_data = []
-        has_error = False
+        url = f"http://{ip_target}:11223/soft-iot/provider/devices/{device_id}/sensors/{sensor_id}/data/latest"
 
-        # Itera sobre os serviços oferecidos e faz a requisição REST
-        # (Um gateway pode ter oferecido múltiplos sensores compatíveis)
-        for service in services:
-            device_id = service.get('device_id')
-            sensor_id = service.get('sensor_id')
-            
-            url = f"http://{ip_target}:11223/soft-iot/devices/{device_id}/sensors/{sensor_id}/data/latest"
+        received_value = None
+        has_received_data = False
 
+        try:
+            self.logger.info(f"Requisitando dados: {url}")
             
-            try:
-                self.logger.info(f"Requisitando dados: {url}")
-                
-                response = requests.get(url, timeout=10)
-                
-                if response.status_code == 200:
-                    # Converte a string JSON para Dicionário Python
-                    json_response = response.json()
-                    
-                    # Extrai especificamente o "item" de dentro da chave "data", 
-                    # de acordo com o seu serviço GetLastData
-                    sensor_item = json_response.get('data')
-                    
-                    self.logger.info(f"Dado recebido com sucesso de {device_id}/{sensor_id}: {sensor_item}")
-                    
-                    collected_data.append({
-                        "device": device_id,
-                        "sensor": sensor_id,
-                        "data": sensor_item # Salva apenas a métrica real
-                    })
-                else:
-                    # Se o status_code for 500, o seu serviço GetLastData retorna {'error': str(e)}
-                    # Podemos capturar isso para colocar no log
+            response = requests.get(url, timeout=10)
+            
+            if response.status_code == 200:
+                sensor_item = response.json().get('data') or {}
+                received_value = sensor_item.get('data_value')
+                has_received_data = True
+                self.logger.info(f"Dado recebido de {device_id}/{sensor_id}: {sensor_item}")
+            else:
+                try:
                     error_msg = response.json().get('error', 'Erro desconhecido')
-                    self.logger.warning(
-                        f"Falha ao obter dado de {device_id}/{sensor_id}. "
-                        f"Status: {response.status_code}. Erro do nó: {error_msg}"
-                    )
-                    has_error = True
-                    
-            except requests.exceptions.RequestException as e:
-                self.logger.error(f"Erro de rede ao tentar acessar o IP {ip_target}: {e}")
-                has_error = True
+                except ValueError:
+                    error_msg = response.text
+                self.logger.warning(
+                    f"Falha ao obter dado de {device_id}/{sensor_id}. "
+                    f"Status: {response.status_code}. Erro do nó: {error_msg}"
+                )
+                
+        except requests.exceptions.RequestException as e:
+            self.logger.error(f"Erro de rede ao tentar acessar o IP {ip_target}: {e}")
 
-        
+        # Nota bruta: 1 para dado válido, 0 para dado inválido ou falha no consumo
+        # Import local: o Zato carrega os arquivos em ordem alfabética, e este módulo
+        # vem antes dos que ele usa. No momento da chamada, todos já estão carregados.
+        from soft_iot_device_trust import is_valid_reading
 
-        has_collected_data = len(collected_data) > 0
+        is_valid_data = has_received_data and is_valid_reading(received_value)
 
         identity_info = self.invoke('soft-iot.id.manager')
         id_evaluator = identity_info.get('gateway_id')
         group_evaluator = identity_info.get('tangle_group')
 
-        if has_collected_data:
+        if is_valid_data:
             raw_service_evaluation = 1
             raw_evaluation_value = 1.0
             status = 'FINISHED'
-            self.logger.info(f"[AVALIAÇÃO PROVEDOR] Dados válidos recebidos. Nota bruta: {raw_evaluation_value}")
+            self.logger.info(f"[AVALIAÇÃO PROVEDOR] Dado válido recebido ({received_value}). Nota bruta: {raw_evaluation_value}")
+        elif has_received_data:
+            raw_service_evaluation = 0
+            raw_evaluation_value = 0.0
+            status = 'FINISHED_INVALID_DATA'
+            self.logger.warning(f"[AVALIAÇÃO PROVEDOR] Dado inválido recebido ({received_value}). Nota bruta: {raw_evaluation_value}")
         else:
             raw_service_evaluation = 0
             raw_evaluation_value = 0.0
             status = 'FAILED_DATA_CONSUMPTION'
-            self.logger.warning(f"[AVALIAÇÃO PROVEDOR] Falha ao consumir dados (possível falsificação). Nota bruta reduzida para: {raw_evaluation_value}")
+            self.logger.warning(f"[AVALIAÇÃO PROVEDOR] Falha ao consumir dados. Nota bruta: {raw_evaluation_value}")
 
         self.logger.info(f"O status será: {status}.")
-
-
-        self.logger.info(f"Nota bruta gerada: {raw_evaluation_value}")
 
         # Decidindo conduta da avaliação
         eval_res = self.invoke('soft-iot.node.evaluation', {
@@ -433,47 +460,34 @@ class RequestNodeServiceTask(Service):
             "value": raw_evaluation_value
         })
 
-        # Recupera as notas (que podem ter sido viciadas por um ataque malicioso)
+        # Recupera as notas (que podem ter sido invertidas por um ataque malicioso)
         conduct_applied = eval_res.get('conduct_applied', 'HONEST')
         final_service_evaluation = eval_res.get('final_service_evaluation', raw_service_evaluation)
         final_evaluation_value = eval_res.get('final_evaluation_value', raw_evaluation_value)
 
         consensus_rep = best_node.get('reputation', 0.5)
 
-        cred_res = self.invoke('soft-iot.reputation.credibility.manager', {
-            "evaluator_id": id_evaluator,
-            "provider_id": node_id,
-            "evaluation_given": final_evaluation_value,
-            "consensus_reputation": consensus_rep
-        })
+        old_cred = None
+        new_cred = None
+        reliability = None
+        consistency = None
 
-        old_cred = cred_res.get('old_credibility', 0.5)
-        new_cred = cred_res.get('new_credibility', 0.5)
-        reliability = cred_res.get('reliability', 1.0)
-        consistency = cred_res.get('consistency', 1.0)
-
-        # Atualização da credibilidade do nó avaliador
-        try:
-            current_timestamp = int(time.time())
-
-            cred_transaction = {
-                "type": "CRED_UPDATE",
-                "evaluator_id": id_evaluator,
-                "credibility": float(new_cred),
-                "timestamp": current_timestamp
-            }
-            
-            self.invoke('soft-iot.dlt.client.api.write', {
-                "index": f"CRED_{id_evaluator}",
-                "data": cred_transaction
-            })
-            self.logger.info(f"Nova credibilidade ({new_cred}) salva na Tangle para o avaliador {id_evaluator}.")
-        except Exception as e:
-            self.logger.error(f"Erro ao salvar credibilidade na Tangle: {e}")
-
-        # Publicação na Tangle. Ignora se for egoísta
+        # Egoísta consome o dado, mas não avalia nem ajusta a credibilidade (sem registros na Tangle)
         if conduct_applied != 'SELFISH':
 
+            cred_res = self.invoke('soft-iot.reputation.credibility.manager', {
+                "evaluator_id": id_evaluator,
+                "provider_id": node_id,
+                "evaluation_given": final_evaluation_value,
+                "consensus_reputation": consensus_rep
+            })
+
+            old_cred = cred_res.get('old_credibility', 0.5)
+            new_cred = cred_res.get('new_credibility', 0.5)
+            reliability = cred_res.get('reliability', 1.0)
+            consistency = cred_res.get('consistency', 1.0)
+
+            # Registro da nota do gateway provedor na Tangle
             current_timestamp = int(time.time())
 
             final_evaluation_value_with_cred = final_service_evaluation * old_cred
@@ -494,6 +508,26 @@ class RequestNodeServiceTask(Service):
                 "data": evaluation_transaction
             })
             self.logger.info(f"Avaliação publicada na Tangle para o provedor {node_id}.")
+
+            # Atualização da credibilidade do nó avaliador
+            try:
+                cred_transaction = {
+                    "type": "CRED_UPDATE",
+                    "evaluator_id": id_evaluator,
+                    "credibility": float(new_cred),
+                    "timestamp": int(time.time())
+                }
+                
+                self.invoke('soft-iot.dlt.client.api.write', {
+                    "index": f"CRED_{id_evaluator}",
+                    "data": cred_transaction
+                })
+                self.logger.info(f"Nova credibilidade ({new_cred}) salva na Tangle para o avaliador {id_evaluator}.")
+            except Exception as e:
+                self.logger.error(f"Erro ao salvar credibilidade na Tangle: {e}")
+
+        else:
+            self.logger.info(f"Nó egoísta: avaliação de {node_id} e ajuste de credibilidade não realizados.")
         
         self.logger.info(f"Coletando reputação.")
 
@@ -513,13 +547,21 @@ class RequestNodeServiceTask(Service):
             reputation_evaluator=my_current_reputation
         )
 
+        gs_manager.update_request_device_data(
+            request_id=request_id,
+            device_id=device_id,
+            sensor_id=sensor_id,
+            reputation_device=best_node.get('device_reputation'),
+            reputation_joint=best_node.get('joint_reputation'),
+            received_data_value=received_value
+        )
+
         self.logger.info(f"Finalizando requisição.")
 
         gs_manager.finalize_request(request_id, status)
 
         self.response.payload = {
             "request_id": request_id,
-            "status": "success" if has_collected_data else "error",
-            "collected_data_count": len(collected_data),
-            "partial_errors": has_error
+            "status": "success" if is_valid_data else "error",
+            "received_data_value": received_value
         }

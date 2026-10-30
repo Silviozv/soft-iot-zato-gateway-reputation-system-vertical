@@ -5,11 +5,49 @@ import uuid
 import os
 import threading
 import logging
+import time
 
 from zato.server.service import Service
 
 
 logger = logging.getLogger('zato.id.manager')
+
+# Arquivo que guarda o ID do gateway dentro do container. Garante o mesmo ID mesmo quando o
+# Zato carrega mais de uma cópia deste módulo (cada cópia teria o seu próprio singleton).
+GATEWAY_ID_FILE = '/tmp/gateway_id'
+
+
+def _load_or_create_gateway_id():
+    """
+    Lê o ID salvo; se não existir, gera um novo e grava de forma atômica.
+    Se duas cópias tentarem criar ao mesmo tempo, só uma grava e a outra lê o valor gravado.
+    """
+    try:
+        new_id = str(uuid.uuid4())
+        fd = os.open(GATEWAY_ID_FILE, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
+        with os.fdopen(fd, 'w') as f:
+            f.write(new_id)
+        return new_id
+    except FileExistsError:
+        pass
+    except Exception as e:
+        logger.error(f"Não foi possível gravar o ID do gateway em {GATEWAY_ID_FILE}: {e}")
+        return str(uuid.uuid4())
+
+    # O arquivo já existe: aguarda a outra cópia terminar de gravar e lê o ID
+    for _ in range(50):
+        try:
+            with open(GATEWAY_ID_FILE, 'r') as f:
+                saved_id = f.read().strip()
+            if saved_id:
+                return saved_id
+        except Exception:
+            pass
+        time.sleep(0.01)
+
+    logger.error(f"Arquivo {GATEWAY_ID_FILE} vazio ou ilegível. Gerando ID temporário.")
+    return str(uuid.uuid4())
+
 
 class IDManager:
 
@@ -25,7 +63,7 @@ class IDManager:
             with cls._lock:
                 if cls._instance is None:
                     cls._instance = super(IDManager, cls).__new__(cls)
-                    cls._instance._id = str(uuid.uuid4())                # Gerando ID do gateway
+                    cls._instance._id = _load_or_create_gateway_id()     # ID do gateway (compartilhado no container)
                     cls._instance._ip = cls._instance._get_real_ip()     # Declarando IP do gateway
                     cls._instance._group = os.environ.get('Zato_GROUP', 'cloud/c1')
                     
