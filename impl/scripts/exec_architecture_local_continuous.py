@@ -59,6 +59,15 @@ COOLDOWN_SECONDS = 30          # pausa entre rodadas
 MAX_RETRIES_PER_RUN = 2        # se a subida falhar (ex.: gateway não subiu), tenta de novo
 EXPERIMENT_NAME = "experimento"  # só informativo, vai para o meta.json
 
+# Sincronização da subida
+# Os devices só são iniciados depois que o serviço de armazenamento de cada gateway
+# estiver inscrito nos tópicos MQTT. Senão, a mensagem de conexão do device se perde.
+GATEWAY_READY_LOG = "Inscrito nos tópicos"            # linha do soft-iot.storage.service
+GATEWAY_READY_TIMEOUT = 300                           # segundos esperando os gateways
+DEVICE_REGISTERED_LOG = "registrado na Tangle"        # linha do soft-iot.device.register
+DEVICE_REGISTER_TIMEOUT = 120                         # segundos esperando o registro dos devices
+DEVICE_START_DELAY = 5                                # espera dentro do container do device
+
 # Coleta
 OUTPUT_DIR = "data_relatorio_final"
 ZATO_PORT = "11223"
@@ -118,6 +127,33 @@ def container_rodando(nome):
     return docker("inspect", "-f", "{{.State.Running}}", nome, capture=True) == "true"
 
 
+def logs_do_container(nome):
+    """Retorna o `docker logs` do container (stdout e stderr juntos)."""
+    res = subprocess.run(["docker", "logs", nome], stdout=subprocess.PIPE,
+                         stderr=subprocess.STDOUT)
+    return res.stdout.decode("utf-8", errors="replace")
+
+
+def aguardar_logs(nomes, texto, minimo, timeout, rotulo):
+    """
+    Espera até que o log de cada container tenha pelo menos `minimo` ocorrências de `texto`.
+    Retorna True se todos atingirem dentro do `timeout`.
+    """
+    fim = time.time() + timeout
+    pendentes = list(nomes)
+    while pendentes and time.time() < fim:
+        pendentes = [n for n in pendentes if logs_do_container(n).count(texto) < minimo]
+        if pendentes:
+            restante = int(fim - time.time())
+            print(f"\r  [{rotulo}] aguardando {', '.join(pendentes)} ({restante}s)   ",
+                  end="", flush=True)
+            time.sleep(5)
+    print()
+    for n in pendentes:
+        print(f"  [!] {n}: '{texto}' não apareceu no log em {timeout}s")
+    return not pendentes
+
+
 # =====================================================================
 # SUBIDA DO AMBIENTE
 # =====================================================================
@@ -143,7 +179,7 @@ def iniciar_gateway(i, cfg):
         # Escuta em tempo real direto no broker MQTT do Hornet (substitui a ponte ZMQ)
         "Zato_DLT_MQTT_IP": HORNET_IP,
         "Zato_DLT_MQTT_PORT": HORNET_MQTT_PORT,
-        "Zato_DLT_MQTT_INDEXES": "REP_HAS_SVC",
+        "Zato_DLT_MQTT_INDEXES": "SVC_DISCOVERY",
         "Zato_NODE_TYPE": str(cfg["node_type"]),
         "Zato_HONESTY_RATE": str(cfg["honesty_rate"]),
         "Zato_GROUP": "cloud/c1",
@@ -168,11 +204,14 @@ def iniciar_device(i, z):
            "-e", "BROKER_PORT=1883",
            "-e", f"SUCCESS_RATE={taxa_sucesso}",
            IMG_DEVICE,
-           "bash", "-c", "sleep 120; python -m app.main; tail -f /dev/null")
+           "bash", "-c", f"sleep {DEVICE_START_DELAY}; python -m app.main; tail -f /dev/null")
 
 
 def subir_ambiente():
-    """Sobe tudo. Retorna True se todos os gateways estiverem rodando e com IP."""
+    """
+    Sobe tudo. Retorna True se todos os gateways estiverem rodando, com IP,
+    prontos para receber devices e com os seus devices registrados.
+    """
     limpar_ambiente()
 
     print("[INFO] Iniciando gateways...")
@@ -191,10 +230,24 @@ def subir_ambiente():
     if not ok:
         return False
 
+    gateways = [f"gat{i}" for i in range(len(GATEWAYS))]
+
+    # Só inicia os devices quando o armazenamento de todos os gateways estiver escutando
+    print("[INFO] Aguardando os gateways ficarem prontos...")
+    if not aguardar_logs(gateways, GATEWAY_READY_LOG, 1,
+                         GATEWAY_READY_TIMEOUT, "gateways"):
+        return False
+
     print("[INFO] Iniciando devices...")
     for i in range(len(GATEWAYS)):
         for z in range(DEVICES_PER_GATEWAY):
             iniciar_device(i, z)
+
+    # Confere se cada gateway registrou os seus devices antes de começar a contar o tempo
+    print("[INFO] Aguardando o registro dos devices...")
+    if not aguardar_logs(gateways, DEVICE_REGISTERED_LOG, DEVICES_PER_GATEWAY,
+                         DEVICE_REGISTER_TIMEOUT, "devices"):
+        return False
     return True
 
 
