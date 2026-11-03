@@ -161,13 +161,13 @@ class CheckNodesServicesTask(Service):
         request_transaction = {
             "source": my_gateway_id,
             "group": my_group,
-            "type": "REP_SVC_REQ",
+            "type": "SVC_REQUEST",
             "requestedService": chosen_service,
             "idRequest": request_id
         }
 
         # Publicação na Tangle utilizando o índice acordado para requisições
-        broadcast_index = 'REP_HAS_SVC'
+        broadcast_index = 'SVC_DISCOVERY'
         
         try:
             res = self.invoke('soft-iot.dlt.client.api.write', {
@@ -495,7 +495,7 @@ class RequestNodeServiceTask(Service):
             evaluation_transaction = {
                 "source": id_evaluator,
                 "group": group_evaluator,
-                "type": "REP_EVALUATION",
+                "type": "GW_EVALUATION",
                 "target": node_id,
                 "serviceEvaluation": final_service_evaluation,
                 "nodeCredibility": float(old_cred),
@@ -504,7 +504,7 @@ class RequestNodeServiceTask(Service):
             }
             
             self.invoke('soft-iot.dlt.client.api.write', {
-                "index": node_id,
+                "index": f"GW_EVAL_{node_id}",
                 "data": evaluation_transaction
             })
             self.logger.info(f"Avaliação publicada na Tangle para o provedor {node_id}.")
@@ -512,14 +512,14 @@ class RequestNodeServiceTask(Service):
             # Atualização da credibilidade do nó avaliador
             try:
                 cred_transaction = {
-                    "type": "CRED_UPDATE",
+                    "type": "GW_CREDIBILITY",
                     "evaluator_id": id_evaluator,
                     "credibility": float(new_cred),
                     "timestamp": int(time.time())
                 }
                 
                 self.invoke('soft-iot.dlt.client.api.write', {
-                    "index": f"CRED_{id_evaluator}",
+                    "index": f"GW_CRED_{id_evaluator}",
                     "data": cred_transaction
                 })
                 self.logger.info(f"Nova credibilidade ({new_cred}) salva na Tangle para o avaliador {id_evaluator}.")

@@ -27,7 +27,7 @@ class ReputationOrchestrator(Service):
 
         # Busca avaliações históricas na Tangle para este nó
         self.logger.info(f"Buscando avaliações na Tangle para o nó: {target_node_id}")
-        tangle_res = self.invoke('soft-iot.dlt.client.api.read_index', {'index': target_node_id})
+        tangle_res = self.invoke('soft-iot.dlt.client.api.read_index', {'index': f"GW_EVAL_{target_node_id}"})
         
         valid_evaluations = []
         
@@ -42,8 +42,8 @@ class ReputationOrchestrator(Service):
                         except json.JSONDecodeError:
                             continue
                     
-                    # Adiciona transações de avaliação (REP_EVALUATION)
-                    if content.get('type') == 'REP_EVALUATION':
+                    # Adiciona transações de avaliação (GW_EVALUATION)
+                    if content.get('type') == 'GW_EVALUATION':
                         valid_evaluations.append({
                             'source': content.get('source'),
                             'value': float(content.get('value', 0.0)),
@@ -92,7 +92,7 @@ class ReputationOrchestrator(Service):
         total_evaluations  = len(trusted_evaluations) + PRIOR_WEIGHT
 
         final_reputation = sum_values / total_evaluations
-        final_reputation = max(-1.0, min(1.0, final_reputation))
+        final_reputation = max(0.0, min(1.0, final_reputation))
 
         self.logger.info(
             f"[RESULTADO ORCHESTRATOR] Nó: {target_node_id} | "
@@ -132,7 +132,7 @@ class CredibilityManager(Service):
         current_cred = 0.5
 
         # Coleta da última credibilidade
-        tangle_res = self.invoke('soft-iot.dlt.client.api.read_index', {'index': f"CRED_{evaluator_id}"})
+        tangle_res = self.invoke('soft-iot.dlt.client.api.read_index', {'index': f"GW_CRED_{evaluator_id}"})
             
         # Validação de Defesa: Verifica se retornou dados válidos
         if isinstance(tangle_res, list) and tangle_res:
@@ -147,7 +147,7 @@ class CredibilityManager(Service):
                     except json.JSONDecodeError:
                         continue
                 
-                if isinstance(data_block, dict) and data_block.get('type') == 'CRED_UPDATE':
+                if isinstance(data_block, dict) and data_block.get('type') == 'GW_CREDIBILITY':
                     valid_creds.append(data_block)
             
             # Ordena as credibilidades pelo timestamp 
@@ -162,7 +162,7 @@ class CredibilityManager(Service):
 
         if provider_id:
             # Busca todo o histórico de avaliações que o provedor já recebeu
-            provider_history_raw = self.invoke('soft-iot.dlt.client.api.read_index', {'index': provider_id})
+            provider_history_raw = self.invoke('soft-iot.dlt.client.api.read_index', {'index': f"GW_EVAL_{provider_id}"})
             
             valid_history = []
 
@@ -177,7 +177,7 @@ class CredibilityManager(Service):
                         except json.JSONDecodeError:
                             tx_data = {}
                     
-                    if isinstance(tx_data, dict) and tx_data.get('type') == 'REP_EVALUATION':
+                    if isinstance(tx_data, dict) and tx_data.get('type') == 'GW_EVALUATION':
                         valid_history.append(tx_data)
 
             # Ordena o histórico do mais recente para o mais antigo pelo Timestamp
@@ -234,10 +234,11 @@ class CredibilityManager(Service):
             ajuste = max(abs(current_cred) * 0.10, MIN_STEP)
             new_cred = current_cred - ajuste
 
+        # Credibilidade limitada ao intervalo [0, 1]
         if new_cred > 1.0:
             new_cred = 1.0
-        elif new_cred < -1.0:
-            new_cred = -1.0
+        elif new_cred < 0.0:
+            new_cred = 0.0
 
 
         # Resposta final do serviço

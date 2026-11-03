@@ -46,7 +46,7 @@ Gateway IoT baseado no **Zato ESB**, integrado ao ecossistema **Soft-IoT** e a u
 | **Nó Hornet** | Software de nó da rede IOTA. Mantém a Tangle e expõe a API REST e a API de eventos MQTT. Não confundir com o "nó" (gateway) da reputação. |
 | **Tangle** | Estrutura distribuída (DAG) que armazena as mensagens. |
 | **Mensagem (*message*)** | Unidade de dados da Tangle na IOTA 1.5 (Chrysalis). Aqui carrega um payload de **indexação** (`index` + `data`). |
-| **Índice (*index*)** | Rótulo da mensagem na Tangle. Permite filtrar e consultar mensagens (ex.: `REP_HAS_SVC`). |
+| **Índice (*index*)** | Rótulo da mensagem na Tangle. Permite filtrar e consultar mensagens (ex.: `SVC_DISCOVERY`). |
 | **Tangle Hornet API** | API REST em Go que encapsula a API REST do nó Hornet e faz a prova de trabalho (PoW). Vem **embutida na imagem do gateway** e roda dentro do mesmo container, em `127.0.0.1:3000`. |
 | **DLT MQTT Manager** | Componente do gateway (singleton em Python) que se conecta ao **broker MQTT do nó Hornet**, assina os índices de interesse e despacha as mensagens para serviços Zato. Substitui a antiga ponte ZMQ. |
 | **TATU** | Protocolo de aplicação sobre MQTT usado entre dispositivos e gateway (registro, `GET`, `FLOW`). |
@@ -117,7 +117,7 @@ Cada gateway fala com o nó Hornet por dois caminhos: **escrita e consulta** pel
 - **Armazenamento local:** broker MQTT interno e SQLite (leituras dos dispositivos).
 - **Mapeamento e API REST:** `devices.json`, comandos TATU e endpoints de dados.
 - **Cliente DLT:** serviços Zato que chamam a Tangle Hornet API embutida por HTTP.
-- **DLT MQTT Manager:** cliente MQTT do broker do Hornet, assinando o índice `REP_HAS_SVC`.
+- **DLT MQTT Manager:** cliente MQTT do broker do Hornet, assinando o índice `SVC_DISCOVERY`.
 - **Tarefas de reputação e tipos de nó:** descoberta, seleção, avaliação e credibilidade.
 - **Confiança dos dispositivos:** registro dos dispositivos na Tangle, avaliação dos seus dados e reputação do dispositivo.
 - **Gerenciadores de estado:** identidade (`IDManager`), estado e reputação local (`GatewayStateManager`) e conduta (`NodeTypeManager`).
@@ -180,9 +180,9 @@ A API também oferece `GET /nodeInfo`, `GET /nodeInfo/all` e `GET /message/{inde
 O `DLTMQTTManager` (`soft_iot_dlt_mqtt.py`) é um cliente `paho-mqtt` iniciado pelo serviço `soft-iot.dlt.mqtt.start`:
 
 1. Conecta em `Zato_DLT_MQTT_IP:Zato_DLT_MQTT_PORT` (padrão `127.0.0.1:1883`) com `client_id` único (`SoftIoT_DLT_<uuid4>`). Dois clientes com o mesmo `client_id` se derrubariam um ao outro no broker.
-2. Assina, com QoS 2, o tópico `messages/indexation/<índice em hexadecimal>` de cada índice em `Zato_DLT_MQTT_INDEXES` (padrão `REP_HAS_SVC`). As assinaturas são refeitas a cada reconexão (espera de 1 a 10 s).
+2. Assina, com QoS 2, o tópico `messages/indexation/<índice em hexadecimal>` de cada índice em `Zato_DLT_MQTT_INDEXES` (padrão `SVC_DISCOVERY`). As assinaturas são refeitas a cada reconexão (espera de 1 a 10 s).
 3. Decodifica o payload binário da mensagem Chrysalis (`parse_indexation_message`) e extrai `index` e `data`.
-4. Despacha conforme o `type`: `REP_SVC_REQ` → `soft-iot.dlt.handler.request`; `REP_SVC_RES` → `soft-iot.dlt.handler.response`, ambos com `invoke_async`.
+4. Despacha conforme o `type`: `SVC_REQUEST` → `soft-iot.dlt.handler.request`; `SVC_RESPONSE` → `soft-iot.dlt.handler.response`, ambos com `invoke_async`.
 
 Leiaute do payload binário (little-endian), como o Hornet publica:
 
@@ -195,13 +195,15 @@ tipo do payload u32 (= 2, indexação) | tamanho do índice u16 | índice | tama
 
 | Índice | Conteúdo | Canal |
 |---|---|---|
-| `REP_HAS_SVC` | `REP_SVC_REQ` e `REP_SVC_RES` | **MQTT** (tempo real) e REST |
-| `<gateway_id>` | `REP_EVALUATION` | **Somente REST** (`read_index`) |
-| `CRED_<evaluator_id>` | `CRED_UPDATE` | **Somente REST** (`read_index`) |
-| `DEVS_<gateway_id>` | `DEVICE_REGISTER` | **Somente REST** (`read_index`) |
-| `DEV_<device_id>` | `REP_DEVICE_EVALUATION` | **Somente REST** (`read_index`) |
+| `SVC_DISCOVERY` | `SVC_REQUEST` e `SVC_RESPONSE` | **MQTT** (tempo real) e REST |
+| `GW_EVAL_<gateway_id>` | `GW_EVALUATION` | **Somente REST** (`read_index`) |
+| `GW_CRED_<evaluator_id>` | `GW_CREDIBILITY` | **Somente REST** (`read_index`) |
+| `GW_DEVS_<gateway_id>` | `DEV_REGISTRATION` | **Somente REST** (`read_index`) |
+| `DEV_EVAL_<device_id>` | `DEV_EVALUATION` | **Somente REST** (`read_index`) |
 
 Escritas sempre usam o REST. O MQTT não permite escrever nem consultar o histórico.
+
+Padrão dos índices: `<ENTIDADE>_<ASSUNTO>_<ID>`; padrão dos tipos (`type`): `<ENTIDADE>_<CONTEÚDO>`. As entidades são `GW` (gateway), `DEV` (dispositivo) e `SVC` (serviço). O índice abrevia o assunto (é o identificador do canal) e o tipo diz por extenso o que a mensagem registra. A exceção nos índices é `SVC_DISCOVERY`, fixo, que recebe `SVC_REQUEST` e `SVC_RESPONSE`. A integração ZMQ antiga, desativada, ainda usa os nomes anteriores (`REP_HAS_SVC`, `REP_SVC_REQ`, `REP_SVC_RES`).
 
 ### Observações
 
@@ -216,12 +218,12 @@ Escritas sempre usam o REST. O MQTT não permite escrever nem consultar o histó
 
 O envelope tem dois níveis. A mensagem da Tangle carrega um payload de indexação (`index` + `data`), e o campo `data` é uma **string JSON** da aplicação, com o campo `type`. O DLT MQTT Manager decodifica o binário e depois faz o parse do JSON.
 
-Exemplo, já decodificado, do que o gateway recebe pelo MQTT (tópico `messages/indexation/5245505f4841535f535643`, que é `REP_HAS_SVC` em hexadecimal):
+Exemplo, já decodificado, do que o gateway recebe pelo MQTT (tópico `messages/indexation/5356435f444953434f56455259`, que é `SVC_DISCOVERY` em hexadecimal):
 
 ```json
 {
-  "index": "REP_HAS_SVC",
-  "data": "{\"type\":\"REP_SVC_REQ\",\"idRequest\":\"...\",\"source\":\"<gateway_id>\",\"group\":\"cloud/c1\",\"requestedService\":\"Thermometer\"}"
+  "index": "SVC_DISCOVERY",
+  "data": "{\"type\":\"SVC_REQUEST\",\"idRequest\":\"...\",\"source\":\"<gateway_id>\",\"group\":\"cloud/c1\",\"requestedService\":\"Thermometer\"}"
 }
 ```
 
@@ -229,12 +231,12 @@ Exemplo, já decodificado, do que o gateway recebe pelo MQTT (tópico `messages/
 
 | `type` | Índice | Descrição |
 |---|---|---|
-| `REP_SVC_REQ` | `REP_HAS_SVC` | Pedido de descoberta: serviço desejado (`requestedService`), `idRequest`, `source`, `group` |
-| `REP_SVC_RES` | `REP_HAS_SVC` | Oferta: `target`, `idRequest`, `source`, `ipSource`, `group`, `requestedService`, `hasService`. A lista `services` vai vazia: o requisitor consulta os dispositivos na Tangle |
-| `REP_EVALUATION` | `<gateway_id>` do avaliado | Avaliação do provedor: `value`, `serviceEvaluation`, `nodeCredibility`, `source`, `target` |
-| `CRED_UPDATE` | `CRED_<evaluator_id>` | Nova credibilidade do avaliador |
-| `DEVICE_REGISTER` | `DEVS_<gateway_id>` | Registro de um dispositivo pelo seu gateway: `gateway_id`, `device_id`, `latitude`, `longitude`, `sensors` (`id`, `type`) |
-| `REP_DEVICE_EVALUATION` | `DEV_<device_id>` | Notas (0 ou 1) dadas pelo gateway aos dados recebidos do dispositivo: `source`, `target`, `sensor_ids`, `serviceEvaluations` (uma nota por leitura recebida no intervalo) |
+| `SVC_REQUEST` | `SVC_DISCOVERY` | Pedido de descoberta: serviço desejado (`requestedService`), `idRequest`, `source`, `group` |
+| `SVC_RESPONSE` | `SVC_DISCOVERY` | Oferta: `target`, `idRequest`, `source`, `ipSource`, `group`, `requestedService`, `hasService`. A lista `services` vai vazia: o requisitor consulta os dispositivos na Tangle |
+| `GW_EVALUATION` | `GW_EVAL_<gateway_id>` do avaliado | Avaliação do provedor: `value`, `serviceEvaluation`, `nodeCredibility`, `source`, `target` |
+| `GW_CREDIBILITY` | `GW_CRED_<evaluator_id>` | Nova credibilidade do avaliador |
+| `DEV_REGISTRATION` | `GW_DEVS_<gateway_id>` | Registro de um dispositivo pelo seu gateway: `gateway_id`, `device_id`, `latitude`, `longitude`, `sensors` (`id`, `type`) |
+| `DEV_EVALUATION` | `DEV_EVAL_<device_id>` | Notas (0 ou 1) dadas pelo gateway aos dados recebidos do dispositivo: `source`, `target`, `sensor_ids`, `serviceEvaluations` (uma nota por leitura recebida no intervalo) |
 
 ---
 
@@ -299,7 +301,7 @@ Definido por `Zato_NODE_TYPE` e `Zato_HONESTY_RATE` (`NodeTypeManager`). A condu
 
 | Arquivo | Serviços | Função |
 |---|---|---|
-| `soft_iot_dlt_mqtt.py` | `soft-iot.dlt.mqtt.start`, `soft-iot.dlt.handler.request`, `soft-iot.dlt.handler.response` | `DLTMQTTManager`: cliente do broker MQTT do Hornet que decodifica as mensagens e as despacha. O tratador de **requisição** procura em `devices.json` os sensores cujo `type` seja igual ao serviço pedido e que já tenham dado armazenado, e responde com `REP_SVC_RES` (o egoísta não responde). O tratador de **resposta** só aceita se o gateway for o `target` e se a requisição estiver em `WAITING_RESPONSES`. |
+| `soft_iot_dlt_mqtt.py` | `soft-iot.dlt.mqtt.start`, `soft-iot.dlt.handler.request`, `soft-iot.dlt.handler.response` | `DLTMQTTManager`: cliente do broker MQTT do Hornet que decodifica as mensagens e as despacha. O tratador de **requisição** procura em `devices.json` os sensores cujo `type` seja igual ao serviço pedido e que já tenham dado armazenado, e responde com `SVC_RESPONSE` (o egoísta não responde). O tratador de **resposta** só aceita se o gateway for o `target` e se a requisição estiver em `WAITING_RESPONSES`. |
 | `soft_iot_zmq_server.py` | `soft-iot.zmq.*` | Versão anterior, por ponte ZMQ. Mantida no código, mas **desativada** (canais comentados no `enmasse.yaml`). |
 
 A Tangle continua sendo a fonte persistida de verdade. O MQTT apenas evita *polling* para saber das novas mensagens.
@@ -308,10 +310,10 @@ A Tangle continua sendo a fonte persistida de verdade. O MQTT apenas evita *poll
 
 | Arquivo | Serviços | Função |
 |---|---|---|
-| `soft_iot_device_trust.py` | `soft-iot.device.register` | Grava `DEVICE_REGISTER` em `DEVS_<gateway_id>` quando o dispositivo inicia a comunicação. |
-| | `soft-iot.device.evaluation` | Avalia cada leitura recebida do dispositivo (nota 0 ou 1, conforme a conduta de avaliador, **sem credibilidade**) e grava `REP_DEVICE_EVALUATION` em `DEV_<device_id>`. |
-| | `soft-iot.dlt.gateway.devices` | Lê `DEVS_<gateway_id>` e devolve os pares `(device_id, sensor_id)` com o serviço pedido. |
-| | `soft-iot.reputation.device` | Reputação do dispositivo: média das notas do seu gateway, com o mesmo prior de 0,5. |
+| `soft_iot_device_trust.py` | `soft-iot.device.register` | Grava `DEV_REGISTRATION` em `GW_DEVS_<gateway_id>` quando o dispositivo inicia a comunicação. |
+| | `soft-iot.device.evaluation` | Avalia cada leitura recebida do dispositivo (nota 0 ou 1, conforme a conduta de avaliador, **sem credibilidade**) e grava `DEV_EVALUATION` em `DEV_EVAL_<device_id>`. |
+| | `soft-iot.dlt.gateway.devices` | Lê `GW_DEVS_<gateway_id>` e devolve os pares `(device_id, sensor_id)` com o serviço pedido. |
+| | `soft-iot.reputation.device` | Reputação do dispositivo: média das notas do seu gateway, com o valor base 0,5 contando como avaliação inicial. |
 
 ### Comportamento simulado dos nós
 
@@ -324,7 +326,7 @@ A Tangle continua sendo a fonte persistida de verdade. O MQTT apenas evita *poll
 | Arquivo | Serviços | Função |
 |---|---|---|
 | `soft_iot_kmeans.py` | `soft-iot.kmeans.credibility` | K-Means (k=4) sobre as credibilidades dos avaliadores; seleciona o cluster de maior valor (avaliadores "confiáveis"). |
-| `soft_iot_reputation_node.py` | `soft-iot.reputation.orchestrator`, `soft-iot.reputation.credibility.manager` | Orquestrador: lê `REP_EVALUATION`, filtra por K-Means e calcula a média ponderada com prior neutro. Credibility manager: atualiza a credibilidade por *reliability* (vs. consenso) e *consistency* (vs. avaliação anterior). |
+| `soft_iot_reputation_node.py` | `soft-iot.reputation.orchestrator`, `soft-iot.reputation.credibility.manager` | Orquestrador: lê `GW_EVALUATION`, filtra por K-Means e calcula a média ponderada com prior neutro. Credibility manager: atualiza a credibilidade por *reliability* (vs. consenso) e *consistency* (vs. avaliação anterior). |
 | `soft_iot_service_handler.py` | `soft-iot.reputation.task.*`, `soft-iot.gateway.state.get` | Pipeline de tarefas (ver fluxo abaixo). |
 
 ---
@@ -336,13 +338,13 @@ Ciclo disparado pelo scheduler (`check-nodes-services`, a cada 20 s). A propaga�
 ### Fluxo local (dispositivo → gateway)
 
 1. O dispositivo envia o handshake com sua identificação e sensores.
-2. O gateway grava o dispositivo em `devices.json` e o **registra na Tangle** (`DEVICE_REGISTER`).
+2. O gateway grava o dispositivo em `devices.json` e o **registra na Tangle** (`DEV_REGISTRATION`).
 3. O gateway envia os comandos `FLOW`.
-4. A cada mensagem de dados, o gateway armazena as leituras e as guarda para avaliação. Uma thread dedicada, a cada `Zato_DEVICE_EVAL_FLUSH_SECONDS` (padrão 20 s), **avalia cada leitura** conforme a conduta de avaliador e grava um único `REP_DEVICE_EVALUATION` por dispositivo. Assim, a escrita na Tangle não trava a thread do MQTT.
+4. A cada mensagem de dados, o gateway armazena as leituras e as guarda para avaliação. Uma thread dedicada, a cada `Zato_DEVICE_EVAL_FLUSH_SECONDS` (padrão 20 s), **avalia cada leitura** conforme a conduta de avaliador e grava um único `DEV_EVALUATION` por dispositivo. Assim, a escrita na Tangle não trava a thread do MQTT.
 
 ### Tarefas (`soft_iot_service_handler.py`)
 
-1. **`check_nodes_services`**: evita concorrência (timeout de 120 s). Cria a requisição local, publica `REP_SVC_REQ` em `REP_HAS_SVC` e dispara `wait_nodes_responses` de forma assíncrona, levando o serviço pedido.
+1. **`check_nodes_services`**: evita concorrência (timeout de 120 s). Cria a requisição local, publica `SVC_REQUEST` em `SVC_DISCOVERY` e dispara `wait_nodes_responses` de forma assíncrona, levando o serviço pedido.
 2. **Gateways receptores** (`dlt.handler.request`, via MQTT): verificam em `devices.json` se algum dispositivo tem o serviço **e já tem dado armazenado** para esse sensor, e respondem apenas que o possuem (o egoísta não responde).
 3. **`wait_nodes_responses`**: aguarda a janela de coleta. Se a requisição ainda estiver em `WAITING_RESPONSES`, passa para `CHOSING_BETTER_NODE` e chama `select_best_node`.
 4. **`select_best_node`**: para cada gateway que respondeu, consulta na Tangle os dispositivos com o serviço, calcula a reputação do gateway e de cada dispositivo e forma a **reputação conjunta** `0,5 × gateway + 0,5 × dispositivo`. Escolhe a dupla de maior valor.
@@ -360,22 +362,22 @@ A tabela `requests` também registra `requested_service`, `id_device`, `id_senso
 
 Para um gateway alvo `node_id`:
 
-1. Ler, por `read_index`, as mensagens do índice `node_id` com `type == REP_EVALUATION`.
+1. Ler, por `read_index`, as mensagens do índice `GW_EVAL_<node_id>` com `type == GW_EVALUATION`.
 2. Extrair os pares `(value, nodeCredibility)` de cada avaliação.
 3. Executar o K-Means (k=4) nas credibilidades e manter as avaliações cujo avaliador pertence ao cluster de maior credibilidade.
 4. Reputação final: média das `value` dos avaliadores confiáveis, combinada com um **prior fixo de 0,5** de peso `Zato_REP_PRIOR_WEIGHT` (padrão 5). O prior evita que as primeiras avaliações causem mudanças bruscas e afastem precocemente as reputações dos nós. O resultado fica no intervalo **[0, 1]**.
 5. Sem histórico: reputação neutra de **0,5** (metade do intervalo). Todos os gateways começam assim.
 
-A credibilidade de cada avaliador evolui a cada interação, por meio do `CredibilityManager`, e é persistida em `CRED_<evaluator_id>`:
+A credibilidade de cada avaliador evolui a cada interação, por meio do `CredibilityManager`, e é persistida em `GW_CRED_<evaluator_id>`:
 
 - **Confiabilidade (*reliability*)**: compara a avaliação do nó com a opinião global (consenso). Limiar: `Zato_RELIABILITY_THRESHOLD`.
 - **Consistência (*consistency*)**: compara a avaliação atual com a anterior do mesmo avaliador. Limiar: `Zato_CONSISTENCY_THRESHOLD`.
 
-Nos experimentos, os dois limiares foram fixados em **0,5**.
+Nos experimentos, os dois limiares foram fixados em **0,5**. A credibilidade começa em 0,5, é ajustada em porcentagem dela mesma (passo mínimo de 0,01) e fica limitada ao intervalo **[0, 1]**.
 
 ### Reputação do dispositivo
 
-Lida de `DEV_<device_id>`, considerando apenas as notas do gateway dono do dispositivo. É a média das notas (0 ou 1), com o mesmo prior de 0,5 e peso `Zato_REP_PRIOR_WEIGHT`. Não usa credibilidade nem K-Means. Sem histórico, vale 0,5.
+Lida de `DEV_EVAL_<device_id>`, considerando apenas as notas do gateway dono do dispositivo. É a média das notas (0 ou 1) com o valor base 0,5 contado como a avaliação inicial do dispositivo: `(Σ notas + 0,5) / (n + 1)`. Não usa credibilidade nem K-Means. Sem histórico, vale 0,5.
 
 ### Reputação conjunta
 
@@ -408,7 +410,7 @@ Jobs HTTP para `http://localhost:11223/...` (independentes do scheduler interno 
 |---|---|---|---|
 | ID manager | Execução única | +5 s | Inicializa a identidade |
 | Local storage start | Execução única | +10 s | Inicia MQTT e SQLite |
-| Conexão MQTT com o Hornet | Execução única | +15 s | Inicia o `DLTMQTTManager` (assina `REP_HAS_SVC`) |
+| Conexão MQTT com o Hornet | Execução única | +15 s | Inicia o `DLTMQTTManager` (assina `SVC_DISCOVERY`) |
 | check-nodes-services | Recorrente | 20 s | Novo ciclo de descoberta |
 | calculate-reputation | Recorrente | 20 s | Atualiza a reputação própria |
 | change-disturbing-behavior | Recorrente | 20 s | Verifica se o nó perturbador deve mudar de conduta |
@@ -569,7 +571,7 @@ Todos os gateways registram trajetória crescente e constante. O nó egoísta n�
 | `TANGLE_NODE_URL` / `TANGLE_NODE_PORT` | Nó Hornet usado pela API embutida | `HORNET_IP` / `14265` |
 | `Zato_TANGLE_API_IP` / `Zato_TANGLE_API_PORT` | Cliente DLT do Zato (padrão `127.0.0.1:3000`) | `127.0.0.1` / `3000` |
 | `Zato_DLT_MQTT_IP` / `Zato_DLT_MQTT_PORT` | Broker MQTT do nó Hornet (padrão `127.0.0.1:1883`) | `HORNET_IP` / `1883` |
-| `Zato_DLT_MQTT_INDEXES` | Índices assinados por MQTT, separados por vírgula | `REP_HAS_SVC` |
+| `Zato_DLT_MQTT_INDEXES` | Índices assinados por MQTT, separados por vírgula | `SVC_DISCOVERY` |
 | `Zato_COLLECTION_TIME` / `Zato_PUBLISH_TIME` | Intervalos de coleta e publicação, em segundos, do ciclo MQTT do armazenamento local | `2` / `6` |
 | `Zato_AGGREGATION_WINDOW_MINUTES` | Janela de agregação | `10` |
 | `Zato_DATA_RETENTION_SECONDS` | Retenção antes da limpeza | `1200` |
@@ -630,7 +632,7 @@ Os serviços Python ficam em `impl/src/services/` e são carregados pelo runtime
 
 - **Estado volátil:** o estado do gateway fica em `/tmp/gateway_state.db`, que se perde ao reiniciar o container.
 - **Credenciais fixas:** as senhas (`123456`, `senha123`) servem apenas para o experimento. Não use em produção.
-- **MQTT sem histórico:** um gateway que estiver fora do ar perde as mensagens `REP_HAS_SVC` publicadas nesse período.
+- **MQTT sem histórico:** um gateway que estiver fora do ar perde as mensagens `SVC_DISCOVERY` publicadas nesse período.
 - **PoW nos gateways:** como a API embutida faz o PoW localmente, a dificuldade da Tangle pesa na CPU de cada gateway. Mantenha `minPoWScore` baixo em execuções numa única máquina.
 - **Ordem de carga do Zato:** o hot-deploy carrega os módulos em ordem alfabética, e um `import` de outro módulo `soft_iot_*` no topo do arquivo pode falhar se ele ainda não foi carregado. Por isso os serviços importam esses módulos **dentro das funções**. O Zato também pode carregar mais de uma cópia de um módulo; estado que precisa ser único no container (como o ID do gateway) deve ficar fora da memória do módulo.
 - **Sincronização por tempo:** a ordem de subida depende de esperas fixas. Se o ambiente for lento, aumente-as.

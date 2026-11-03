@@ -17,8 +17,8 @@ VALID_MAX = 100.0
 INVALID_DATA_VALUE = "-1.0"
 
 # Índices na Tangle
-DEVICES_INDEX_PREFIX = "DEVS_"       # DEVS_<gateway_id>: devices registrados pelo gateway
-DEVICE_EVAL_INDEX_PREFIX = "DEV_"    # DEV_<device_id>: avaliações do device feitas pelo seu gateway
+DEVICES_INDEX_PREFIX = "GW_DEVS_"    # GW_DEVS_<gateway_id>: devices registrados pelo gateway
+DEVICE_EVAL_INDEX_PREFIX = "DEV_EVAL_"  # DEV_EVAL_<device_id>: avaliações do device feitas pelo seu gateway
 
 
 def is_valid_reading(value):
@@ -85,7 +85,7 @@ class DeviceRegisterService(Service):
             })
 
         register_transaction = {
-            "type": "DEVICE_REGISTER",
+            "type": "DEV_REGISTRATION",
             "gateway_id": my_gateway_id,
             "group": my_group,
             "device_id": device_id,
@@ -169,7 +169,7 @@ class DeviceEvaluationService(Service):
         my_group = identity_info.get('tangle_group')
 
         evaluation_transaction = {
-            "type": "REP_DEVICE_EVALUATION",
+            "type": "DEV_EVALUATION",
             "source": my_gateway_id,
             "group": my_group,
             "target": device_id,
@@ -215,7 +215,7 @@ class GatewayDevicesLookupService(Service):
         if isinstance(tangle_res, list):
             for tx in tangle_res:
                 content = _parse_tx_data(tx)
-                if content and content.get('type') == 'DEVICE_REGISTER' and content.get('gateway_id') == gateway_id:
+                if content and content.get('type') == 'DEV_REGISTRATION' and content.get('gateway_id') == gateway_id:
                     registers.append(content)
 
         # O registro mais recente de cada device prevalece
@@ -246,7 +246,7 @@ class GatewayDevicesLookupService(Service):
 class DeviceReputationService(Service):
     """
     Calcula a reputação de um device a partir das notas (0 ou 1) gravadas pelo seu gateway.
-    Usa o mesmo prior neutro (0.5) da reputação dos gateways.
+    O valor base 0.5 entra na média como a avaliação inicial do device.
     """
     name = 'soft-iot.reputation.device'
 
@@ -267,7 +267,7 @@ class DeviceReputationService(Service):
         if isinstance(tangle_res, list):
             for tx in tangle_res:
                 content = _parse_tx_data(tx)
-                if not content or content.get('type') != 'REP_DEVICE_EVALUATION':
+                if not content or content.get('type') != 'DEV_EVALUATION':
                     continue
                 if content.get('target') != device_id:
                     continue
@@ -285,10 +285,10 @@ class DeviceReputationService(Service):
             self.response.payload = {"device_id": device_id, "reputation": 0.5, "status": "no_data"}
             return
 
-        PRIOR = 0.5
-        PRIOR_WEIGHT = float(os.environ.get('Zato_REP_PRIOR_WEIGHT', '5'))
+        # O valor base 0.5 conta como a avaliação inicial do device (peso de uma avaliação)
+        INITIAL_EVALUATION = 0.5
 
-        reputation = (sum(evaluations) + PRIOR * PRIOR_WEIGHT) / (len(evaluations) + PRIOR_WEIGHT)
+        reputation = (sum(evaluations) + INITIAL_EVALUATION) / (len(evaluations) + 1)
         reputation = max(0.0, min(1.0, reputation))
 
         self.logger.info(

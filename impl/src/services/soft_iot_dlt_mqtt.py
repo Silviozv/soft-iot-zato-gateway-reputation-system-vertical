@@ -105,8 +105,8 @@ class DLTMQTTManager:
         self.mqtt_ip = os.environ.get('Zato_DLT_MQTT_IP', '127.0.0.1')
         self.mqtt_port = int(os.environ.get('Zato_DLT_MQTT_PORT', '1883'))
 
-        # Índices assinados (separados por vírgula). Só o REP_HAS_SVC é usado em tempo real.
-        indexes = os.environ.get('Zato_DLT_MQTT_INDEXES', 'REP_HAS_SVC')
+        # Índices assinados (separados por vírgula). Só o SVC_DISCOVERY é usado em tempo real.
+        indexes = os.environ.get('Zato_DLT_MQTT_INDEXES', 'SVC_DISCOVERY')
         self.indexes = [index.strip() for index in indexes.split(',') if index.strip()]
 
         self.topics = [
@@ -162,10 +162,10 @@ class DLTMQTTManager:
             app_data = json.loads(data)
             msg_type = app_data.get('type')
 
-            if index == "REP_HAS_SVC" and self.server:
-                if msg_type == 'REP_SVC_RES':
+            if index == "SVC_DISCOVERY" and self.server:
+                if msg_type == 'SVC_RESPONSE':
                     self.server.invoke_async('soft-iot.dlt.handler.response', app_data, None)
-                elif msg_type == 'REP_SVC_REQ':
+                elif msg_type == 'SVC_REQUEST':
                     self.server.invoke_async('soft-iot.dlt.handler.request', app_data, None)
 
         except json.JSONDecodeError:
@@ -176,7 +176,7 @@ class DLTMQTTManager:
 
 class DLTResponseHandlerService(Service):
     """
-    Serviço Zato dedicado a interceptar respostas de requisições de serviço (REP_SVC_RES).
+    Serviço Zato dedicado a interceptar respostas de requisições de serviço (SVC_RESPONSE).
     """
     name = 'soft-iot.dlt.handler.response'
 
@@ -215,7 +215,7 @@ class DLTResponseHandlerService(Service):
 
 class DLTRequestHandlerService(Service):
     """
-    Serviço Zato dedicado a interceptar requisições (REP_SVC_REQ).
+    Serviço Zato dedicado a interceptar requisições (SVC_REQUEST).
     """
     name = 'soft-iot.dlt.handler.request'
 
@@ -318,14 +318,14 @@ class DLTRequestHandlerService(Service):
                     })
 
         if matched_services:
-            logger.info(f"Encontrados {len(matched_services)} sensores compatíveis. Preparando REP_SVC_RES.")
+            logger.info(f"Encontrados {len(matched_services)} sensores compatíveis. Preparando SVC_RESPONSE.")
 
             my_gateway_id = id_manager.id
             my_group = id_manager.group
             my_ip = id_manager.ip
 
             response_tx = {
-                "type": "REP_SVC_RES",
+                "type": "SVC_RESPONSE",
                 "target": requester_id,
                 "idRequest": id_request,
                 "source": my_gateway_id,
@@ -338,7 +338,7 @@ class DLTRequestHandlerService(Service):
 
             try:
                 dlt_payload = {
-                    "index": "REP_HAS_SVC",
+                    "index": "SVC_DISCOVERY",
                     "data": response_tx
                 }
 
