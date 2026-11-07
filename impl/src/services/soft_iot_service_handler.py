@@ -15,9 +15,31 @@ from zato.server.service import Service
 from soft_iot_node_type import NodeTypeManager
 from soft_iot_gateway_state import GatewayStateManager
 
-# Pesos da reputação conjunta da dupla gateway/device (50-50)
-GATEWAY_REPUTATION_WEIGHT = 0.5
-DEVICE_REPUTATION_WEIGHT = 0.5
+# Peso da reputação do device na reputação conjunta, em porcentagem (0 a 100).
+# O gateway fica com o restante: 20 -> device 20% e gateway 80%.
+DEFAULT_DEVICE_REPUTATION_WEIGHT = 50
+
+
+def get_reputation_weights(log):
+    """
+    Lê Zato_DEVICE_REPUTATION_WEIGHT e retorna (peso_gateway, peso_device) em [0, 1].
+    Valor ausente, inválido ou fora de 0-100 usa o padrão (50).
+    """
+    raw = os.environ.get('Zato_DEVICE_REPUTATION_WEIGHT', str(DEFAULT_DEVICE_REPUTATION_WEIGHT))
+    try:
+        percent = float(str(raw).strip())
+    except ValueError:
+        percent = None
+
+    if percent is None or not 0 <= percent <= 100:
+        log.warning(
+            f"Zato_DEVICE_REPUTATION_WEIGHT inválido ({raw!r}); use um valor de 0 a 100. "
+            f"Usando {DEFAULT_DEVICE_REPUTATION_WEIGHT}."
+        )
+        percent = DEFAULT_DEVICE_REPUTATION_WEIGHT
+
+    device_weight = percent / 100.0
+    return 1.0 - device_weight, device_weight
 
 
 class GetGatewayStateService(Service):
@@ -282,6 +304,9 @@ class SelectBestNodeTask(Service):
 
         candidates_ranking = []
 
+        gateway_weight, device_weight = get_reputation_weights(self.logger)
+        self.logger.info(f"Pesos da reputação conjunta: gateway {gateway_weight:.2f} / device {device_weight:.2f}")
+
         for node_id, data in node_metadata.items():
             try:
                 # Devices do gateway que possuem o serviço (consulta na Tangle)
@@ -319,8 +344,8 @@ class SelectBestNodeTask(Service):
                     else:
                         device_reputation = 0.5
 
-                    joint_reputation = (GATEWAY_REPUTATION_WEIGHT * gateway_reputation) + \
-                                       (DEVICE_REPUTATION_WEIGHT * device_reputation)
+                    joint_reputation = (gateway_weight * gateway_reputation) + \
+                                       (device_weight * device_reputation)
 
                     candidates_ranking.append({
                         "node_id": node_id,
