@@ -12,25 +12,90 @@ from zato.server.service import Service
 
 logger = logging.getLogger('zato.trust')
 
+# Modos de uso da credibilidade no cálculo da reputação (Zato_REP_CREDIBILITY_MODE)
+#   0 -> sem credibilidade: média das notas (serviceEvaluation), sem K-Means
+#   1 -> credibilidade no momento da avaliação: usa 'value' e 'nodeCredibility' gravados
+#        na avaliação; K-Means sobre a credibilidade de cada avaliação
+#   2 -> credibilidade atual: serviceEvaluation x credibilidade mais recente do avaliador;
+#        K-Means sobre a credibilidade atual de cada avaliador
+CREDIBILITY_MODES = {
+    0: 'sem credibilidade',
+    1: 'credibilidade no momento da avaliação',
+    2: 'credibilidade atual',
+}
+DEFAULT_CREDIBILITY_MODE = 2
+
+
+def get_credibility_mode(log):
+    """Lê Zato_REP_CREDIBILITY_MODE. Valor ausente ou inválido usa o padrão."""
+    raw = os.environ.get('Zato_REP_CREDIBILITY_MODE', str(DEFAULT_CREDIBILITY_MODE))
+    try:
+        mode = int(str(raw).strip())
+    except ValueError:
+        mode = None
+
+    if mode not in CREDIBILITY_MODES:
+        log.warning(
+            f"Zato_REP_CREDIBILITY_MODE inválido ({raw!r}). "
+            f"Usando {DEFAULT_CREDIBILITY_MODE} ({CREDIBILITY_MODES[DEFAULT_CREDIBILITY_MODE]})."
+        )
+        mode = DEFAULT_CREDIBILITY_MODE
+    return mode
+
+
+def get_latest_credibility(service, evaluator_id):
+    """
+    Credibilidade mais recente do avaliador, lida de GW_CRED_<evaluator_id>.
+    Retorna None se ele ainda não tem credibilidade publicada.
+    """
+    tangle_res = service.invoke('soft-iot.dlt.client.api.read_index', {'index': f"GW_CRED_{evaluator_id}"})
+
+    if not (isinstance(tangle_res, list) and tangle_res):
+        return None
+
+    valid_creds = []
+    for tx in tangle_res:
+        data_block = tx.get('data')
+
+        if isinstance(data_block, str):
+            try:
+                data_block = json.loads(data_block)
+            except json.JSONDecodeError:
+                continue
+
+        if isinstance(data_block, dict) and data_block.get('type') == 'GW_CREDIBILITY':
+            valid_creds.append(data_block)
+
+    if not valid_creds:
+        return None
+
+    # Ordena as credibilidades pelo timestamp (mais recente primeiro)
+    valid_creds.sort(key=lambda x: int(x.get('timestamp', 0)), reverse=True)
+    return valid_creds[0].get('credibility', 0.5)
+
+
 class ReputationOrchestrator(Service):
     """
     Serviço principal que coordena o cálculo de reputação de um nó.
+    O uso da credibilidade depende de Zato_REP_CREDIBILITY_MODE (ver CREDIBILITY_MODES).
     """
     name = 'soft-iot.reputation.orchestrator'
 
     def handle(self):
         target_node_id = self.request.payload.get('node_id')
-        
+
         if not target_node_id:
             self.response.payload = {"status": "error", "message": "node_id é obrigatório"}
             return
 
+        mode = get_credibility_mode(self.logger)
+
         # Busca avaliações históricas na Tangle para este nó
         self.logger.info(f"Buscando avaliações na Tangle para o nó: {target_node_id}")
         tangle_res = self.invoke('soft-iot.dlt.client.api.read_index', {'index': f"GW_EVAL_{target_node_id}"})
-        
+
         valid_evaluations = []
-        
+
         # Extração segura dos dados, considerando possíveis strings escapadas
         if isinstance(tangle_res, list):
             for tx in tangle_res:
@@ -41,29 +106,83 @@ class ReputationOrchestrator(Service):
                             content = json.loads(content)
                         except json.JSONDecodeError:
                             continue
-                    
+
                     # Adiciona transações de avaliação (GW_EVALUATION)
                     if content.get('type') == 'GW_EVALUATION':
+                        try:
+                            service_evaluation = float(content.get('serviceEvaluation'))
+                        except (ValueError, TypeError):
+                            service_evaluation = None
+
                         valid_evaluations.append({
                             'source': content.get('source'),
                             'value': float(content.get('value', 0.0)),
-                            'credibility': float(content.get('nodeCredibility', 0.0))
+                            'credibility': float(content.get('nodeCredibility', 0.0)),
+                            'service_evaluation': service_evaluation
                         })
                 except (ValueError, TypeError, AttributeError):
                     continue
 
+        # Os modos 0 e 2 usam a nota pura (e o modo 2 também o avaliador)
+        if mode == 0:
+            valid_evaluations = [ev for ev in valid_evaluations if ev['service_evaluation'] is not None]
+        elif mode == 2:
+            valid_evaluations = [ev for ev in valid_evaluations
+                                 if ev['service_evaluation'] is not None and ev['source']]
+
         # Se não há dados, retorna a reputação inicial (0.5)
         if len(valid_evaluations) == 0:
             self.logger.warning(f"Sem dados na Tangle para {target_node_id}. Retornando 0.5 (neutro).")
-            self.response.payload = {"node_id": target_node_id, "reputation": 0.5, "status": "no_data"}
+            self.response.payload = {"node_id": target_node_id, "reputation": 0.5, "status": "no_data",
+                                     "credibility_mode": mode}
             return
+
+        if mode == 0:
+            scores = self._scores_without_credibility(valid_evaluations)
+        elif mode == 1:
+            scores = self._scores_evaluation_time_credibility(valid_evaluations)
+        else:
+            scores = self._scores_current_credibility(valid_evaluations)
+
+        # Calcula a Reputação Final: Média aritmética das avaliações dos nós presentes no cluster confiável
+
+        PRIOR = 0.5
+        PRIOR_WEIGHT = float(os.environ.get('Zato_REP_PRIOR_WEIGHT', '5'))
+
+        sum_values = sum(scores) + (PRIOR * PRIOR_WEIGHT)
+        total_evaluations  = len(scores) + PRIOR_WEIGHT
+
+        final_reputation = sum_values / total_evaluations
+        final_reputation = max(0.0, min(1.0, final_reputation))
+
+        self.logger.info(
+            f"[RESULTADO ORCHESTRATOR] Nó: {target_node_id} | "
+            f"Modo: {mode} ({CREDIBILITY_MODES[mode]}) | "
+            f"Reputação Final: {final_reputation:.4f} | "
+            f"Avaliações Confiáveis Utilizadas: {len(scores)} de {len(valid_evaluations)}"
+        )
+
+        self.response.payload = {
+            "node_id": target_node_id,
+            "reputation": round(final_reputation, 4),
+            "evaluations_used": len(scores),
+            "credibility_mode": mode,
+            "status": "success"
+        }
+
+    def _scores_without_credibility(self, valid_evaluations):
+        """Modo 0: todas as avaliações entram, com a nota pura (0 ou 1)."""
+        return [ev['service_evaluation'] for ev in valid_evaluations]
+
+    def _scores_evaluation_time_credibility(self, valid_evaluations):
+        """Modo 1: credibilidade gravada no momento de cada avaliação."""
 
         # Executa o K-Means sobre as credibilidades
         credibilities = [eval_data['credibility'] for eval_data in valid_evaluations]
-        
+
         self.logger.info(f"Executando K-Means sobre as credibilidades de {len(credibilities)} avaliadores")
         kmeans_res = self.invoke('soft-iot.kmeans.credibility', {'data': credibilities})
-        
+
         # Maiores credibilidades
         trusted_credibilities = kmeans_res if isinstance(kmeans_res, list) else []
 
@@ -83,29 +202,44 @@ class ReputationOrchestrator(Service):
         if not trusted_evaluations:
             trusted_evaluations = valid_evaluations  # Fallback de segurança
 
-        # Calcula a Reputação Final: Média aritmética das avaliações dos nós presentes no cluster confiável
+        return [ev['value'] for ev in trusted_evaluations]
 
-        PRIOR = 0.5
-        PRIOR_WEIGHT = float(os.environ.get('Zato_REP_PRIOR_WEIGHT', '5'))
+    def _scores_current_credibility(self, valid_evaluations):
+        """
+        Modo 2: credibilidade atual de cada avaliador.
+        O K-Means agrupa os avaliadores (um valor por avaliador) e entram só as
+        avaliações dos mais credíveis, cada uma valendo serviceEvaluation x credibilidade atual.
+        """
+        current_creds = {}
+        for source in sorted({ev['source'] for ev in valid_evaluations}):
+            cred = get_latest_credibility(self, source)
+            current_creds[source] = float(cred) if cred is not None else 0.5
 
-        sum_values = sum(ev['value'] for ev in trusted_evaluations) + (PRIOR * PRIOR_WEIGHT)
-        total_evaluations  = len(trusted_evaluations) + PRIOR_WEIGHT
+        self.logger.info(f"Credibilidades atuais dos avaliadores: {current_creds}")
 
-        final_reputation = sum_values / total_evaluations
-        final_reputation = max(0.0, min(1.0, final_reputation))
+        credibilities = list(current_creds.values())
+        self.logger.info(f"Executando K-Means sobre as credibilidades atuais de {len(credibilities)} avaliadores")
+        kmeans_res = self.invoke('soft-iot.kmeans.credibility', {'data': credibilities})
 
-        self.logger.info(
-            f"[RESULTADO ORCHESTRATOR] Nó: {target_node_id} | "
-            f"Reputação Final: {final_reputation:.4f} | "
-            f"Avaliações Confiáveis Utilizadas: {len(trusted_evaluations)} de {len(valid_evaluations)}"
-        )
-        
-        self.response.payload = {
-            "node_id": target_node_id,
-            "reputation": round(final_reputation, 4),
-            "evaluations_used": len(trusted_evaluations),
-            "status": "success"
+        trusted_credibilities = kmeans_res if isinstance(kmeans_res, list) else []
+
+        if not trusted_credibilities:
+            self.logger.error("Falha no K-Means, utilizando todos os avaliadores como fallback.")
+            trusted_credibilities = credibilities
+
+        # Avaliadores cuja credibilidade atual está no cluster de maior credibilidade
+        trusted_sources = {
+            source for source, cred in current_creds.items()
+            if any(math.isclose(cred, tc, rel_tol=1e-5) for tc in trusted_credibilities)
         }
+
+        if not trusted_sources:
+            trusted_sources = set(current_creds)  # Fallback de segurança
+
+        self.logger.info(f"Avaliadores mais credíveis: {sorted(trusted_sources)}")
+
+        return [ev['service_evaluation'] * current_creds[ev['source']]
+                for ev in valid_evaluations if ev['source'] in trusted_sources]
 
 
 class CredibilityManager(Service):
@@ -132,30 +266,10 @@ class CredibilityManager(Service):
         current_cred = 0.5
 
         # Coleta da última credibilidade
-        tangle_res = self.invoke('soft-iot.dlt.client.api.read_index', {'index': f"GW_CRED_{evaluator_id}"})
-            
-        # Validação de Defesa: Verifica se retornou dados válidos
-        if isinstance(tangle_res, list) and tangle_res:
-            valid_creds = []
-            
-            for tx in tangle_res:
-                data_block = tx.get('data')
-                
-                if isinstance(data_block, str):
-                    try:
-                        data_block = json.loads(data_block)
-                    except json.JSONDecodeError:
-                        continue
-                
-                if isinstance(data_block, dict) and data_block.get('type') == 'GW_CREDIBILITY':
-                    valid_creds.append(data_block)
-            
-            # Ordena as credibilidades pelo timestamp 
-            valid_creds.sort(key=lambda x: int(x.get('timestamp', 0)), reverse=True)
-            
-            if valid_creds:
-                current_cred = valid_creds[0].get('credibility', 0.5)
-                self.logger.info(f"Credibilidade recuperada para {evaluator_id}: {current_cred}")
+        latest_cred = get_latest_credibility(self, evaluator_id)
+        if latest_cred is not None:
+            current_cred = latest_cred
+            self.logger.info(f"Credibilidade recuperada para {evaluator_id}: {current_cred}")
 
         # Coleta da última avaliação
         last_evaluation_given = None
