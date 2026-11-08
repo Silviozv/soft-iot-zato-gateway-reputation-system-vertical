@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 
 import os
+import time
 import requests
 import json
 
@@ -57,7 +58,9 @@ class DLTWriterService(DLTClientBaseService):
 
         try:
             # Fazendo chamada da rota de escrita da API.
+            inicio = time.perf_counter()
             response = requests.post(url, json=payload, timeout=10)
+            self.logger.info(f"LEDGER_TEMPO escrita {(time.perf_counter() - inicio) * 1000:.1f} ms {index} {response.status_code}")
 
             if response.status_code in (200, 201):
                 self.logger.info(f"RESPOSTA DA ESCRITA: {response.text}") 
@@ -96,7 +99,9 @@ class DLTIndexReaderService(DLTClientBaseService):
         url = f"{self.base_url}/message/{index}"   
         
         try:
+            inicio = time.perf_counter()
             response = requests.get(url, timeout=10)
+            self.logger.info(f"LEDGER_TEMPO leitura {(time.perf_counter() - inicio) * 1000:.1f} ms {index} {response.status_code}")
             
             if response.status_code == 200 and response.text.strip():
                 try:
