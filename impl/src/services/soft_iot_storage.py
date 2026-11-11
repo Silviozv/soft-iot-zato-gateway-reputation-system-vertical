@@ -178,7 +178,7 @@ class LocalStorageController:
         """
         Processa o CONNECT do Virtual-FoT-Device e envia o CONNACK.
         """
-        self.logger.info(f"DEBUG PAYLOAD (Len: {len(payload)}): '{payload}'")
+        self.logger.debug(f"DEBUG PAYLOAD (Len: {len(payload)}): '{payload}'")
 
         if not payload:
             self.logger.warning("Payload vazio recebido no CONNECT. Ignorando.")
@@ -251,7 +251,7 @@ class LocalStorageController:
             data_list = self.parse_tatu_body_to_data(message_content)
             
             if data_list:
-                self.logger.info(f"Armazenando {len(data_list)} registros para Dev: {device_id}, Sensor: {sensor_id}")
+                self.logger.debug(f"Armazenando {len(data_list)} registros para Dev: {device_id}, Sensor: {sensor_id}")
                 self.store_sensor_data(device_id, sensor_id, data_list)
 
                 # Avaliação do dado recebido (conduta de avaliador do gateway)
@@ -334,7 +334,7 @@ class LocalStorageController:
             
         if not save_enabled:
             # Apenas loga (opcional, para não poluir muito se for alta frequência)
-            self.logger.info(f"[PERSISTÊNCIA OFF] Ignorando {len(data_list)} registros de {device_id}/{sensor_id}")
+            self.logger.debug(f"[PERSISTÊNCIA OFF] Ignorando {len(data_list)} registros de {device_id}/{sensor_id}")
             return
         
 
@@ -362,7 +362,7 @@ class LocalStorageController:
                 if batch:
                     cursor.executemany(sql, batch)
                     conn.commit()
-                    self.logger.info(f"Salvos {len(batch)} registros para {device_id}/{sensor_id}")
+                    self.logger.debug(f"Salvos {len(batch)} registros para {device_id}/{sensor_id}")
                     
         except Exception as e:
             self.logger.error(f"Erro SQL ao inserir dados: {e}")
@@ -423,7 +423,7 @@ class LocalStorageController:
             self.logger.error(f"Erro ao despachar registro do device {device_id}: {e}")
 
     def handle_device_connected(self, device_id):
-        self.logger.info(f"ENTREI NO HANDLE_DEVICE_CONNECTED PARA O ID: '{device_id}'")
+        self.logger.debug(f"ENTREI NO HANDLE_DEVICE_CONNECTED PARA O ID: '{device_id}'")
         """Envia requisição de FLOW quando um dispositivo conecta."""
         self.logger.info(f"Dispositivo conectado detectado: {device_id}")
         
@@ -483,7 +483,7 @@ class LocalStorageController:
                     flow_req = f"FLOW VALUE {sensor_id} {flow_body}"
                     
                     topic = f"dev/{device_id}"
-                    self.logger.info(f"Enviando para o Java (ID exato): '{sensor_id}'")
+                    self.logger.debug(f"Enviando para o Java (ID exato): '{sensor_id}'")
                     
                     self.client.publish(topic, flow_req)
                     time.sleep(0.2)
@@ -544,7 +544,7 @@ class AggregateSensorData(Service):
             
         self.window_seconds = self.window_minutes * 60
 
-        self.logger.info(f"INICIANDO AGREGAÇÃO (Janela configurada: {self.window_minutes} minutos)...")
+        self.logger.debug(f"INICIANDO AGREGAÇÃO (Janela configurada: {self.window_minutes} minutos)...")
         
         conn = None
         try:
@@ -564,7 +564,7 @@ class AggregateSensorData(Service):
                 self._aggregate_sensor(cursor, row['device_id'], row['sensor_id'])
             
             conn.commit()
-            self.logger.info("AGREGAÇÃO FINALIZADA.")
+            self.logger.debug("AGREGAÇÃO FINALIZADA.")
 
         except Exception as e:
             self.logger.error(f"Erro na agregação: {e}")
@@ -614,7 +614,7 @@ class AggregateSensorData(Service):
         if not aggregates:
             return
 
-        self.logger.info(f"Agregando {len(aggregates)} blocos de {self.window_minutes} min para {device_id}/{sensor_id}")
+        self.logger.debug(f"Agregando {len(aggregates)} blocos de {self.window_minutes} min para {device_id}/{sensor_id}")
 
         last_processed_time = last_time
 
@@ -663,7 +663,7 @@ class CleanupOldData(Service):
         try:
             # Procura pela variável DATA_RETENTION_SECONDS
             retention_seconds = int(os.environ.get('Zato_DATA_RETENTION_SECONDS', DEFAULT_RETENTION_SECONDS))
-            self.logger.info(
+            self.logger.debug(
                 f"TEMPO LIDO PELA VARIAVEL DE AMBIENTE NO CLEANUP: {os.environ.get('Zato_DATA_RETENTION_SECONDS')}"
             )
         except ValueError:
@@ -675,7 +675,7 @@ class CleanupOldData(Service):
         # Formata para o padrão do SQLite (String ISO)
         cutoff_str = cutoff_date.strftime("%Y-%m-%d %H:%M:%S")
 
-        self.logger.info(f"INICIANDO LIMPEZA RAPIDA: Removendo registros anteriores a {cutoff_str} ({retention_seconds}s de retenção)")
+        self.logger.debug(f"INICIANDO LIMPEZA RAPIDA: Removendo registros anteriores a {cutoff_str} ({retention_seconds}s de retenção)")
 
         conn = None
         try:
@@ -699,7 +699,7 @@ class CleanupOldData(Service):
             deleted_count = cursor.rowcount
             conn.commit()
 
-            self.logger.info(f"LIMPEZA CONCLUÍDA: {deleted_count} registros removidos com sucesso.")
+            self.logger.debug(f"LIMPEZA CONCLUÍDA: {deleted_count} registros removidos com sucesso.")
 
         except Exception as e:
             self.logger.error(f"ERRO CRÍTICO na limpeza de dados: {e}")

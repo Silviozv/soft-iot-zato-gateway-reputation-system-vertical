@@ -38,7 +38,13 @@ class NodeTypeManager:
                     # Valor inicial da conduta
                     cls._instance._current_conduct = "HONEST"
                     
-                    logger.info(f"NodeTypeManager iniciado - Tipo: {cls._instance._node_type} - Taxa de honestidade: {cls._instance._honesty_rate}%")
+                    logger.info(
+                        f"[CONFIG] tipo={cls._instance._node_type} honestidade={cls._instance._honesty_rate} "
+                        f"modo_credibilidade={os.environ.get('Zato_REP_CREDIBILITY_MODE', '-')} "
+                        f"peso_device={os.environ.get('Zato_DEVICE_REPUTATION_WEIGHT', '-')} "
+                        f"exploracao={os.environ.get('Zato_EXPLORATION_RATE', '-')} "
+                        f"peso_prior={os.environ.get('Zato_REP_PRIOR_WEIGHT', '-')}"
+                    )
                     
                     # Inicializa a conduta baseada no tipo
                     cls._instance.define_conduct(False)
@@ -125,7 +131,7 @@ class NodeEvaluationService(Service):
 
         if conduct == "SELFISH":
             # Egoísta não avalia 
-            self.logger.info(f"Nó Egoísta ignorando avaliação para {provider_id}")
+            self.logger.debug(f"Nó Egoísta ignorando avaliação para {provider_id}")
             self.response.payload = {"status": "ignored", "conduct_applied": conduct}
             return
 
@@ -135,7 +141,7 @@ class NodeEvaluationService(Service):
         if conduct == "MALICIOUS":
             # Malicioso inverte a avaliação correta (dado válido -> 0, dado inválido -> 1)
             inverted_service_evaluation = 1 - final_service_evaluation
-            self.logger.info(
+            self.logger.debug(
                 f"Ataque Malicioso: Invertendo avaliação de {final_service_evaluation} para {inverted_service_evaluation}"
             )
             final_service_evaluation = inverted_service_evaluation
@@ -156,7 +162,7 @@ class ChangeDisturbingNodeBehaviorTask(Service):
     REPUTATION_THRESHOLD = 0.9
 
     def handle(self):
-        self.logger.info("Executando ChangeDisturbingNodeBehaviorTask...")
+        self.logger.debug("Executando ChangeDisturbingNodeBehaviorTask...")
 
         nt_manager = NodeTypeManager()
         gs_manager = GatewayStateManager()
@@ -171,14 +177,14 @@ class ChangeDisturbingNodeBehaviorTask(Service):
 
         reputation_value = gs_manager.get_reputation()
         
-        self.logger.info(f"Reputação lida do armazenamento local: {reputation_value}")
+        self.logger.debug(f"Reputação lida do armazenamento local: {reputation_value}")
 
         if reputation_value > self.REPUTATION_THRESHOLD:
-            self.logger.info(f"Limiar de {self.REPUTATION_THRESHOLD} atingido. Alterando a flag de comportamento.")
+            self.logger.info(f"[CONDUTA] mudou reputacao={reputation_value} limiar={self.REPUTATION_THRESHOLD}")
             
             gs_manager.set_behavior_changed(True)
             
             self.response.payload = {"status": "success", "behavior_changed": True}
         else:
             self.response.payload = {"status": "success", "behavior_changed": False}
-        
+        

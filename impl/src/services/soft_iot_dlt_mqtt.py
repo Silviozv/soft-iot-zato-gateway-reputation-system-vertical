@@ -157,7 +157,7 @@ class DLTMQTTManager:
                 return
 
             index, data = parsed
-            logger.info(f"[DLT MQTT] Mensagem recebida | índice: {index} | dados: {data}")
+            logger.debug(f"[DLT MQTT] Mensagem recebida | índice: {index} | dados: {data}")
 
             app_data = json.loads(data)
             msg_type = app_data.get('type')
@@ -191,10 +191,10 @@ class DLTResponseHandlerService(Service):
 
         # Verifica se o gateway atual é o alvo
         if target != id_manager.id:
-            logger.info("NÃO É O ALVO")
+            logger.debug("NÃO É O ALVO")
             return
 
-        logger.info("GRAVANDO")
+        logger.debug("GRAVANDO")
 
         # Extração dos dados
         id_request = payload.get('idRequest')
@@ -209,7 +209,7 @@ class DLTResponseHandlerService(Service):
         current_status = gs_manager.get_request_status(id_request)
 
         if current_status == 'WAITING_RESPONSES':
-            logger.info(f"Recebida proposta válida do provedor {source} (IP: {ip_source}).")
+            logger.debug(f"Recebida proposta válida do provedor {source} (IP: {ip_source}).")
             gs_manager.save_response(id_request, source, ip_source, target, services, group_name)
 
 
@@ -282,10 +282,10 @@ class DLTRequestHandlerService(Service):
         id_manager = IDManager()
 
         if requester_id == id_manager.id:
-            logger.info("ELE MESMO MANDOU")
+            logger.debug("ELE MESMO MANDOU")
             return
 
-        logger.info(f"Processando requisição de serviço '{requested_service}' do nó {requester_id}.")
+        logger.debug(f"Processando requisição de serviço '{requested_service}' do nó {requester_id}.")
 
         nt_manager = NodeTypeManager()
         gs_manager = GatewayStateManager()
@@ -297,7 +297,7 @@ class DLTRequestHandlerService(Service):
 
         # Egoísta omite que possui o serviço e não recebe requisições diretas
         if current_conduct == "SELFISH":
-            logger.info(f"Conduta EGOÍSTA ativa: omitindo resposta para o serviço '{requested_service}'.")
+            logger.debug(f"Conduta EGOÍSTA ativa: omitindo resposta para o serviço '{requested_service}'.")
             return
 
         # O gateway apenas verifica se algum device conectado possui o serviço.
@@ -318,7 +318,7 @@ class DLTRequestHandlerService(Service):
                     })
 
         if matched_services:
-            logger.info(f"Encontrados {len(matched_services)} sensores compatíveis. Preparando SVC_RESPONSE.")
+            logger.debug(f"Encontrados {len(matched_services)} sensores compatíveis. Preparando SVC_RESPONSE.")
 
             my_gateway_id = id_manager.id
             my_group = id_manager.group
@@ -344,13 +344,13 @@ class DLTRequestHandlerService(Service):
 
                 # Despacha o envio para a Tangle de forma assíncrona
                 self.invoke_async('soft-iot.dlt.client.api.write', dlt_payload)
-                logger.info(f"Oferta de serviço encaminhada para gravação na Tangle (Nó {requester_id}).")
+                logger.debug(f"Oferta de serviço encaminhada para gravação na Tangle (Nó {requester_id}).")
 
             except Exception as e:
                 logger.error(f"Erro interno ao acionar a API local de DLT: {e}")
 
         else:
-            logger.info(f"O nó local não possui o serviço '{requested_service}'. Ignorando.")
+            logger.debug(f"O nó local não possui o serviço '{requested_service}'. Ignorando.")
 
 
 class DLTMQTTStartupService(Service):

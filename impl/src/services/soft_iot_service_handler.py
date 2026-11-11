@@ -42,6 +42,51 @@ def get_reputation_weights(log):
     return 1.0 - device_weight, device_weight
 
 
+# Exploração na escolha do provedor (adaptação da seleção probabilística do EigenTrust,
+# Kamvar et al., 2003). Em Zato_EXPLORATION_RATE % das requisições, o provedor é sorteado
+# entre os demais candidatos com reputação conjunta >= EXPLORATION_THRESHOLD, em vez de
+# ser o primeiro do ranking. 0 desliga a exploração (sempre o primeiro do ranking).
+DEFAULT_EXPLORATION_RATE = 0
+EXPLORATION_THRESHOLD = 0.5
+
+
+def get_exploration_rate(log):
+    """
+    Lê Zato_EXPLORATION_RATE (0 a 100) e retorna a probabilidade em [0, 1].
+    Valor ausente, inválido ou fora de 0-100 usa o padrão (0).
+    """
+    raw = os.environ.get('Zato_EXPLORATION_RATE', str(DEFAULT_EXPLORATION_RATE))
+    try:
+        percent = float(str(raw).strip())
+    except ValueError:
+        percent = None
+
+    if percent is None or not 0 <= percent <= 100:
+        log.warning(
+            f"Zato_EXPLORATION_RATE inválido ({raw!r}); use um valor de 0 a 100. "
+            f"Usando {DEFAULT_EXPLORATION_RATE}."
+        )
+        percent = DEFAULT_EXPLORATION_RATE
+
+    return percent / 100.0
+
+
+def choose_provider(ranking, exploration_rate):
+    """
+    Recebe o ranking já ordenado (maior reputação conjunta primeiro).
+    Retorna (dupla escolhida, tipo da escolha):
+      - 'MELHOR': o primeiro do ranking;
+      - 'EXPLORACAO': sorteada entre os demais com reputação conjunta >= EXPLORATION_THRESHOLD;
+      - 'MELHOR_SEM_ELEGIVEIS': caiu na exploração, mas nenhum outro candidato atingia o limiar.
+    """
+    if exploration_rate > 0 and random.random() < exploration_rate:
+        eligible = [c for c in ranking[1:] if c['joint_reputation'] >= EXPLORATION_THRESHOLD]
+        if eligible:
+            return random.choice(eligible), 'EXPLORACAO'
+        return ranking[0], 'MELHOR_SEM_ELEGIVEIS'
+    return ranking[0], 'MELHOR'
+
+
 class GetGatewayStateService(Service):
     """
     Serviço de leitura (Read Endpoint) que expõe o estado atual do Gateway.
@@ -50,7 +95,7 @@ class GetGatewayStateService(Service):
     name = 'soft-iot.gateway.state.get'
 
     def handle(self):
-        self.logger.info("Executando GetGatewayStateService para extração completa de estado local...")
+        self.logger.debug("Executando GetGatewayStateService para extração completa de estado local...")
         
         try:
             # Instancia o DAO
@@ -94,7 +139,7 @@ class CalculateNodeReputationTask(Service):
     name = 'soft-iot.reputation.task.calculate'
 
     def handle(self):
-        self.logger.info("Executando CalculateNodeReputationTask...")
+        self.logger.debug("Executando CalculateNodeReputationTask...")
 
         identity_info = self.invoke('soft-iot.id.manager')
         my_gateway_id = identity_info.get('gateway_id')
@@ -114,7 +159,7 @@ class CalculateNodeReputationTask(Service):
             
             gs_manager.set_reputation(my_current_reputation)
             
-            self.logger.info(f"SUCESSO: Minha reputação salva no arquivo local: {my_current_reputation}")
+            self.logger.debug(f"SUCESSO: Minha reputação salva no arquivo local: {my_current_reputation}")
 
             self.response.payload = {"status": "success", "my_current_reputation": my_current_reputation}
     
@@ -126,7 +171,7 @@ class CheckNodesServicesTask(Service):
     name = 'soft-iot.reputation.task.check_nodes_services'
 
     def handle(self):
-        self.logger.info("Executando CheckNodesServicesTask (Requisição de Serviços)...")
+        self.logger.debug("Executando CheckNodesServicesTask (Requisição de Serviços)...")
 
         gs_manager = GatewayStateManager()
 
@@ -150,7 +195,7 @@ class CheckNodesServicesTask(Service):
                     gs_manager.finalize_request(last_id, 'TIMEOUT')
                     
                 else:
-                    self.logger.info(f"Requisição {last_id} em andamento.")
+                    self.logger.debug(f"Requisição {last_id} em andamento.")
                     self.response.payload = {"status": "Already requesting"}
                     return
         
@@ -163,7 +208,7 @@ class CheckNodesServicesTask(Service):
         ]
 
         chosen_service = random.choice(available_services)
-        self.logger.info(f"Serviço escolhido aleatoriamente para requisição: {chosen_service}")
+        self.logger.debug(f"Serviço escolhido aleatoriamente para requisição: {chosen_service}")
     
         # Recolhe a identidade do Gateway local
         identity_info = self.invoke('soft-iot.id.manager')
@@ -198,7 +243,7 @@ class CheckNodesServicesTask(Service):
             })
 
             if res.get("status") == "success":
-                self.logger.info(f"Requisição do serviço {chosen_service} publicada no índice '{broadcast_index}'.")
+                self.logger.info(f"[REQ] inicio req={request_id} servico={chosen_service}")
             
                 # Dispara o loop de contagem no Zato de forma assíncrona (não bloqueia esta task)
                 self.invoke_async('soft-iot.reputation.task.wait_nodes_responses', {'request_id': request_id, 'requested_service': chosen_service}, None)
@@ -239,7 +284,7 @@ class WaitNodesResponsesTask(Service):
             self.response.payload = {"status": "error", "message": "Missing ID"}
             return
 
-        self.logger.info(f"Iniciando janela de coleta de {wait_time}s para a requisição {request_id}...")
+        self.logger.debug(f"Iniciando janela de coleta de {wait_time}s para a requisição {request_id}...")
 
         # Bloqueia este Worker de segundo plano (Deixa o banco recebendo as respostas no servidor ZMQ)
         time.sleep(wait_time)
@@ -250,7 +295,7 @@ class WaitNodesResponsesTask(Service):
 
         # Só avança o estado se a transação não sofreu um Timeout absoluto e não falhou
         if current_status == 'WAITING_RESPONSES':
-            self.logger.info(f"Janela concluída. Atualizando status da requisição {request_id} para iniciar cálculo.")
+            self.logger.debug(f"Janela concluída. Atualizando status da requisição {request_id} para iniciar cálculo.")
             
             # Muda o status
             gs_manager.update_request_status(request_id, 'CHOSING_BETTER_NODE')
@@ -279,7 +324,7 @@ class SelectBestNodeTask(Service):
             self.logger.error("request_id não fornecido para SelectBestNodeTask.")
             return
 
-        self.logger.info(f"Iniciando análise de candidatos para a requisição {request_id} (serviço: {requested_service})...")
+        self.logger.debug(f"Iniciando análise de candidatos para a requisição {request_id} (serviço: {requested_service})...")
         
         gs_manager = GatewayStateManager()
         responses = gs_manager.get_responses_for_request(request_id)
@@ -300,12 +345,12 @@ class SelectBestNodeTask(Service):
                 "ip": ip_source
             }
 
-        self.logger.info(f"QUEM RESPONDEU: {node_metadata}...")
+        self.logger.info(f"[REQ] respostas req={request_id} servico={requested_service} respostas={len(node_metadata)}")
 
         candidates_ranking = []
 
         gateway_weight, device_weight = get_reputation_weights(self.logger)
-        self.logger.info(f"Pesos da reputação conjunta: gateway {gateway_weight:.2f} / device {device_weight:.2f}")
+        self.logger.debug(f"Pesos da reputação conjunta: gateway {gateway_weight:.2f} / device {device_weight:.2f}")
 
         for node_id, data in node_metadata.items():
             try:
@@ -320,7 +365,7 @@ class SelectBestNodeTask(Service):
                     continue
 
                 # Reputação do gateway
-                self.logger.info(f"Calculando reputação para: {node_id}")
+                self.logger.debug(f"Calculando reputação para: {node_id}")
                 rep_res = self.invoke('soft-iot.reputation.orchestrator', {'node_id': node_id})
                 
                 # Fallback de segurança para 0.5
@@ -371,11 +416,18 @@ class SelectBestNodeTask(Service):
             gs_manager.finalize_request(request_id, 'FAILED_NO_SERVICES')
             return
 
-        # Seleção do Vencedor
-        best_node = candidates_ranking[0]
-        
+        # Seleção do provedor: o primeiro do ranking ou, com a exploração ligada, um sorteado
+        exploration_rate = get_exploration_rate(self.logger)
+        best_node, choice_type = choose_provider(candidates_ranking, exploration_rate)
+
         self.logger.info(
-            f"Melhor dupla: gateway {best_node['node_id']} (rep {best_node['reputation']}) / "
+            f"ESCOLHA: {choice_type} | request {request_id} | taxa de exploração {exploration_rate:.2f} | "
+            f"gateway {best_node['node_id']} | posição no ranking {candidates_ranking.index(best_node) + 1} "
+            f"de {len(candidates_ranking)}"
+        )
+
+        self.logger.debug(
+            f"Dupla escolhida: gateway {best_node['node_id']} (rep {best_node['reputation']}) / "
             f"device {best_node['device_id']} (rep {best_node['device_reputation']}) | "
             f"Reputação conjunta: {best_node['joint_reputation']}"
         )
@@ -414,7 +466,7 @@ class RequestNodeServiceTask(Service):
         device_id = best_node.get('device_id')
         sensor_id = best_node.get('sensor_id')
         
-        self.logger.info(f"Iniciando consumo direto de dados do Gateway {node_id} (IP: {ip_target}) / Device {device_id}...")
+        self.logger.debug(f"Iniciando consumo direto de dados do Gateway {node_id} (IP: {ip_target}) / Device {device_id}...")
 
         if not device_id or not sensor_id:
             self.logger.warning(f"Dupla escolhida sem device/sensor (gateway {node_id}).")
@@ -427,7 +479,7 @@ class RequestNodeServiceTask(Service):
         has_received_data = False
 
         try:
-            self.logger.info(f"Requisitando dados: {url}")
+            self.logger.debug(f"Requisitando dados: {url}")
             
             response = requests.get(url, timeout=10)
             
@@ -435,7 +487,7 @@ class RequestNodeServiceTask(Service):
                 sensor_item = response.json().get('data') or {}
                 received_value = sensor_item.get('data_value')
                 has_received_data = True
-                self.logger.info(f"Dado recebido de {device_id}/{sensor_id}: {sensor_item}")
+                self.logger.debug(f"Dado recebido de {device_id}/{sensor_id}: {sensor_item}")
             else:
                 try:
                     error_msg = response.json().get('error', 'Erro desconhecido')
@@ -464,19 +516,19 @@ class RequestNodeServiceTask(Service):
             raw_service_evaluation = 1
             raw_evaluation_value = 1.0
             status = 'FINISHED'
-            self.logger.info(f"[AVALIAÇÃO PROVEDOR] Dado válido recebido ({received_value}). Nota bruta: {raw_evaluation_value}")
+            self.logger.debug(f"[AVALIAÇÃO PROVEDOR] Dado válido recebido ({received_value}). Nota bruta: {raw_evaluation_value}")
         elif has_received_data:
             raw_service_evaluation = 0
             raw_evaluation_value = 0.0
             status = 'FINISHED_INVALID_DATA'
-            self.logger.warning(f"[AVALIAÇÃO PROVEDOR] Dado inválido recebido ({received_value}). Nota bruta: {raw_evaluation_value}")
+            self.logger.debug(f"[AVALIAÇÃO PROVEDOR] Dado inválido recebido ({received_value}). Nota bruta: {raw_evaluation_value}")
         else:
             raw_service_evaluation = 0
             raw_evaluation_value = 0.0
             status = 'FAILED_DATA_CONSUMPTION'
             self.logger.warning(f"[AVALIAÇÃO PROVEDOR] Falha ao consumir dados. Nota bruta: {raw_evaluation_value}")
 
-        self.logger.info(f"O status será: {status}.")
+        self.logger.debug(f"O status será: {status}.")
 
         # Decidindo conduta da avaliação
         eval_res = self.invoke('soft-iot.node.evaluation', {
@@ -532,7 +584,7 @@ class RequestNodeServiceTask(Service):
                 "index": f"GW_EVAL_{node_id}",
                 "data": evaluation_transaction
             })
-            self.logger.info(f"Avaliação publicada na Tangle para o provedor {node_id}.")
+            self.logger.debug(f"Avaliação publicada na Tangle para o provedor {node_id}.")
 
             # Atualização da credibilidade do nó avaliador
             try:
@@ -547,18 +599,18 @@ class RequestNodeServiceTask(Service):
                     "index": f"GW_CRED_{id_evaluator}",
                     "data": cred_transaction
                 })
-                self.logger.info(f"Nova credibilidade ({new_cred}) salva na Tangle para o avaliador {id_evaluator}.")
+                self.logger.debug(f"Nova credibilidade ({new_cred}) salva na Tangle para o avaliador {id_evaluator}.")
             except Exception as e:
                 self.logger.error(f"Erro ao salvar credibilidade na Tangle: {e}")
 
         else:
-            self.logger.info(f"Nó egoísta: avaliação de {node_id} e ajuste de credibilidade não realizados.")
+            self.logger.debug(f"Nó egoísta: avaliação de {node_id} e ajuste de credibilidade não realizados.")
         
-        self.logger.info(f"Coletando reputação.")
+        self.logger.debug(f"Coletando reputação.")
 
         my_current_reputation = gs_manager.get_reputation()
 
-        self.logger.info(f"Atualizando requisição.")
+        self.logger.debug(f"Atualizando requisição.")
 
         gs_manager.update_request_evaluation_data(
             request_id=request_id,
@@ -581,7 +633,14 @@ class RequestNodeServiceTask(Service):
             received_data_value=received_value
         )
 
-        self.logger.info(f"Finalizando requisição.")
+        dado = 'valido' if is_valid_data else ('invalido' if has_received_data else 'falha')
+        self.logger.info(
+            f"[AVALIACAO] req={request_id} provedor={node_id} device={device_id} dado={dado} "
+            f"conduta={conduct_applied} nota={final_service_evaluation} "
+            f"cred_antiga={old_cred} cred_nova={new_cred}"
+        )
+
+        self.logger.debug(f"Finalizando requisição.")
 
         gs_manager.finalize_request(request_id, status)
 

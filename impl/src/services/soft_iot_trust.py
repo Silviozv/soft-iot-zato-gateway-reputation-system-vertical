@@ -91,7 +91,7 @@ class ReputationOrchestrator(Service):
         mode = get_credibility_mode(self.logger)
 
         # Busca avaliações históricas na Tangle para este nó
-        self.logger.info(f"Buscando avaliações na Tangle para o nó: {target_node_id}")
+        self.logger.debug(f"Buscando avaliações na Tangle para o nó: {target_node_id}")
         tangle_res = self.invoke('soft-iot.dlt.client.api.read_index', {'index': f"GW_EVAL_{target_node_id}"})
 
         valid_evaluations = []
@@ -132,7 +132,7 @@ class ReputationOrchestrator(Service):
 
         # Se não há dados, retorna a reputação inicial (0.5)
         if len(valid_evaluations) == 0:
-            self.logger.warning(f"Sem dados na Tangle para {target_node_id}. Retornando 0.5 (neutro).")
+            self.logger.debug(f"Sem dados na Tangle para {target_node_id}. Retornando 0.5 (neutro).")
             self.response.payload = {"node_id": target_node_id, "reputation": 0.5, "status": "no_data",
                                      "credibility_mode": mode}
             return
@@ -155,7 +155,7 @@ class ReputationOrchestrator(Service):
         final_reputation = sum_values / total_evaluations
         final_reputation = max(0.0, min(1.0, final_reputation))
 
-        self.logger.info(
+        self.logger.debug(
             f"[RESULTADO ORCHESTRATOR] Nó: {target_node_id} | "
             f"Modo: {mode} ({CREDIBILITY_MODES[mode]}) | "
             f"Reputação Final: {final_reputation:.4f} | "
@@ -180,7 +180,7 @@ class ReputationOrchestrator(Service):
         # Executa o K-Means sobre as credibilidades
         credibilities = [eval_data['credibility'] for eval_data in valid_evaluations]
 
-        self.logger.info(f"Executando K-Means sobre as credibilidades de {len(credibilities)} avaliadores")
+        self.logger.debug(f"Executando K-Means sobre as credibilidades de {len(credibilities)} avaliadores")
         kmeans_res = self.invoke('soft-iot.kmeans.credibility', {'data': credibilities})
 
         # Maiores credibilidades
@@ -215,10 +215,10 @@ class ReputationOrchestrator(Service):
             cred = get_latest_credibility(self, source)
             current_creds[source] = float(cred) if cred is not None else 0.5
 
-        self.logger.info(f"Credibilidades atuais dos avaliadores: {current_creds}")
+        self.logger.debug(f"Credibilidades atuais dos avaliadores: {current_creds}")
 
         credibilities = list(current_creds.values())
-        self.logger.info(f"Executando K-Means sobre as credibilidades atuais de {len(credibilities)} avaliadores")
+        self.logger.debug(f"Executando K-Means sobre as credibilidades atuais de {len(credibilities)} avaliadores")
         kmeans_res = self.invoke('soft-iot.kmeans.credibility', {'data': credibilities})
 
         trusted_credibilities = kmeans_res if isinstance(kmeans_res, list) else []
@@ -236,7 +236,7 @@ class ReputationOrchestrator(Service):
         if not trusted_sources:
             trusted_sources = set(current_creds)  # Fallback de segurança
 
-        self.logger.info(f"Avaliadores mais credíveis: {sorted(trusted_sources)}")
+        self.logger.debug(f"Avaliadores mais credíveis: {sorted(trusted_sources)}")
 
         return [ev['service_evaluation'] * current_creds[ev['source']]
                 for ev in valid_evaluations if ev['source'] in trusted_sources]
@@ -269,7 +269,7 @@ class CredibilityManager(Service):
         latest_cred = get_latest_credibility(self, evaluator_id)
         if latest_cred is not None:
             current_cred = latest_cred
-            self.logger.info(f"Credibilidade recuperada para {evaluator_id}: {current_cred}")
+            self.logger.debug(f"Credibilidade recuperada para {evaluator_id}: {current_cred}")
 
         # Coleta da última avaliação
         last_evaluation_given = None
@@ -305,7 +305,7 @@ class CredibilityManager(Service):
 
         # Tratamento da primeira avaliação
         if last_evaluation_given is None:
-            self.logger.info(f"Primeira vez que {evaluator_id} avalia {provider_id}. Consistência considerada máxima.")
+            self.logger.debug(f"Primeira vez que {evaluator_id} avalia {provider_id}. Consistência considerada máxima.")
             last_evaluation_given = evaluation_given
         else:
             last_evaluation_given = float(last_evaluation_given)
@@ -407,9 +407,9 @@ class KMeansCredibilityService(Service):
         for i, cluster_id in enumerate(clusters_of_points):
             cluster_map.setdefault(cluster_id, []).append(data[i])
 
-        self.logger.info("Clusters designados:")
+        self.logger.debug("Clusters designados:")
         for c_id, points in cluster_map.items():
-            self.logger.info(f"Cluster {c_id}: {points}")
+            self.logger.debug(f"Cluster {c_id}: {points}")
 
         # Encontra o cluster que contém o maior valor original
         # Achamos o maior valor ignorando os -1.0 que injetamos
@@ -429,9 +429,9 @@ class KMeansCredibilityService(Service):
 
         points_in_target_cluster = list(result_set)
         
-        self.logger.info(f"Pontos no cluster com maior valor: {points_in_target_cluster}")
+        self.logger.debug(f"Pontos no cluster com maior valor: {points_in_target_cluster}")
 
         duration = time.time() - start_time
-        self.logger.info(f"Tempo de execução: {duration:.6f} segundos")
+        self.logger.debug(f"Tempo de execução: {duration:.6f} segundos")
 
         self.response.payload = points_in_target_cluster

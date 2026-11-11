@@ -180,14 +180,14 @@ class ProvideServiceData(BaseAPIService):
             conduct = nt_manager.current_conduct
 
             if conduct == "MALICIOUS":
-                self.logger.warning(
-                    f"[PROVEDOR] Conduta MALICIOSA: injetando dado inválido para {device_id}/{sensor_id} "
-                    f"(dado real: {item.get('data_value')})."
+                self.logger.info(
+                    f"[PROVEDOR] conduta={conduct} device={device_id} sensor={sensor_id} "
+                    f"dado_real={item.get('data_value')} dado_enviado={INVALID_DATA_VALUE}"
                 )
                 item = dict(item)
                 item['data_value'] = INVALID_DATA_VALUE
             else:
-                self.logger.info(f"[PROVEDOR] Conduta {conduct}: repassando dado de {device_id}/{sensor_id}.")
+                self.logger.info(f"[PROVEDOR] conduta={conduct} device={device_id} sensor={sensor_id}")
 
             self.response.payload = {'data': item}
 

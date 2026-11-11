@@ -234,7 +234,7 @@ class GatewayStateManager:
                     
                     conn.commit()
                     
-                    self.logger.info(f"Nova requisição de auditoria criada. ID: {request_id}")
+                    self.logger.debug(f"Nova requisição de auditoria criada. ID: {request_id}")
                     return request_id
                 
         except Exception as e:
@@ -349,7 +349,7 @@ class GatewayStateManager:
                     
                     # O rowcount verifica quantas linhas foram fisicamente alteradas no disco
                     if cursor.rowcount > 0:
-                        self.logger.info(f"Status da requisição {request_id} atualizado para '{new_status}'.")
+                        self.logger.debug(f"Status da requisição {request_id} atualizado para '{new_status}'.")
                         return True
                     else:
                         self.logger.warning(f"Tentativa de atualizar status falhou: ID {request_id} não encontrado.")
@@ -400,7 +400,7 @@ class GatewayStateManager:
                     conn.commit()
                     
                     if cursor.rowcount > 0:
-                        self.logger.info(f"Requisição {request_id} finalizada com status '{final_status}'.")
+                        self.logger.info(f"[FIM] req={request_id} status={final_status}")
                         return True
                     return False
                 
@@ -430,7 +430,7 @@ class GatewayStateManager:
                     conn.commit()
                     
                     if cursor.rowcount > 0:
-                        self.logger.info(f"Dados de avaliação gravados com sucesso para a requisição {request_id}.")
+                        self.logger.debug(f"Dados de avaliação gravados com sucesso para a requisição {request_id}.")
         except Exception as e:
             self.logger.error(f"Erro ao atualizar dados de avaliação do request {request_id}: {e}")
 

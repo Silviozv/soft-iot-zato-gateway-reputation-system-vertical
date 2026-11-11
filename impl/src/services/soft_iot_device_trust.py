@@ -152,7 +152,7 @@ class DeviceEvaluationService(Service):
 
             if conduct == "SELFISH":
                 # Egoísta consome o dado mas não avalia
-                self.logger.info(f"[AVALIAÇÃO DEVICE] Nó egoísta não avalia o device {device_id}.")
+                self.logger.debug(f"[AVALIAÇÃO DEVICE] Nó egoísta não avalia o device {device_id}.")
                 self.response.payload = {"status": "ignored", "conduct_applied": conduct}
                 return
 
@@ -184,8 +184,8 @@ class DeviceEvaluationService(Service):
         })
 
         self.logger.info(
-            f"[AVALIAÇÃO DEVICE] {device_id} {sensor_ids} | valores: {values} | "
-            f"condutas: {conducts} | notas: {evaluations} | escrita: {res.get('status')}"
+            f"[AVALIACAO DEVICE] device={device_id} sensores={sensor_ids} valores={values} "
+            f"condutas={conducts} notas={evaluations} escrita={res.get('status')}"
         )
 
         self.response.payload = {"status": res.get('status', 'error'), "evaluations": evaluations}
@@ -238,7 +238,7 @@ class GatewayDevicesLookupService(Service):
                     })
                     break
 
-        self.logger.info(f"Devices do gateway {gateway_id} com o serviço '{requested_service}': {matched}")
+        self.logger.debug(f"Devices do gateway {gateway_id} com o serviço '{requested_service}': {matched}")
 
         self.response.payload = matched
 
@@ -281,7 +281,7 @@ class DeviceReputationService(Service):
                         continue
 
         if not evaluations:
-            self.logger.warning(f"Sem avaliações na Tangle para o device {device_id}. Retornando 0.5 (neutro).")
+            self.logger.debug(f"Sem avaliações na Tangle para o device {device_id}. Retornando 0.5 (neutro).")
             self.response.payload = {"device_id": device_id, "reputation": 0.5, "status": "no_data"}
             return
 
@@ -291,7 +291,7 @@ class DeviceReputationService(Service):
         reputation = (sum(evaluations) + INITIAL_EVALUATION) / (len(evaluations) + 1)
         reputation = max(0.0, min(1.0, reputation))
 
-        self.logger.info(
+        self.logger.debug(
             f"[REPUTAÇÃO DEVICE] Device: {device_id} | Reputação: {reputation:.4f} | "
             f"Avaliações: {len(evaluations)}"
         )

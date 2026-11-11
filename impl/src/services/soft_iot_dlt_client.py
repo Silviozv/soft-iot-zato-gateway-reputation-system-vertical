@@ -63,7 +63,7 @@ class DLTWriterService(DLTClientBaseService):
             self.logger.info(f"LEDGER_TEMPO escrita {(time.perf_counter() - inicio) * 1000:.1f} ms {index} {response.status_code}")
 
             if response.status_code in (200, 201):
-                self.logger.info(f"RESPOSTA DA ESCRITA: {response.text}") 
+                self.logger.debug(f"RESPOSTA DA ESCRITA: {response.text}") 
                 
                 # Se a API retornou um JSON válido, entrega a resposta do Zato.
                 if response.text and response.text.strip():
